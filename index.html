@@ -1,0 +1,1929 @@
+
+<!DOCTYPE html><html lang="en"><head prefix="og: http://ogp.me/ns#"><script>window.plate = {
+    /** Get the root domain
+     * @return example.org for www.example.org */
+    rootDomain:function(){
+        return location.hostname.split('.').slice(-2).join('.');
+    },
+    /** Handler post login, does some special stuff wraps need */
+    wrapLogin:function(data){
+        if (data && data.userData && data.userData.displayName){
+            /* login successful, set cookies and reload page */
+            var args = {path:'/', domain:'.' + plate.rootDomain()};
+            cmg.query.cookie('ur_name', data.userData.displayName, args);
+            cmg.query.cookie('ur_uuid', data.userData.uuid, args);
+            cmg.query.cookie('alias', 'u=' + data.userData.uuid + '&n=' + data.userData.displayName, args);
+            plate.onReady();
+        }
+    },
+    loginSuccessHandler:function(){
+        if(window.janrain && janrain.capture && janrain.capture.ui){
+            janrain.on('onCaptureLoginSuccess', plate.wrapLogin);
+            janrain.medleySession = false;
+        }else{
+            setTimeout(plate.loginSuccessHandler, 100);
+        }
+    },
+    logoutSuccessHandler:function(){
+        if(window.janrain){
+            janrain.on('cmg_ready', function(){
+                var logout = function(){
+                    /* the alias cookie can only be on root domain, but ur_name+
+                     ur_uuid can be on root domain or subdomain: carpet bomb */
+                    ['ur_name', 'ur_uuid', 'alias'].forEach(function(e, i, a){
+                        document.cookie=e + '=""; path=/;expires=' + plate.cookieExpiration(-2);
+                        document.cookie=e + '=""; path=/;expires=' + plate.cookieExpiration(-2) + '; domain=.' + plate.rootDomain();
+                    });
+                    location= 'http://' + cmg.site_meta.domain + '/auth/logout';
+                };
+                janrain.settings.capture.federateLogoutCallback = logout;
+                /* the cmLogout handler is defined by janrain, unbind it now */
+                cmg.query(document).undelegate('.cmLogout');
+                /* then add our own override */
+                cmg.query('.cmLogout').on('touchstart click', function(e){
+                    logout();
+                });
+            });
+        }else{
+            setTimeout(plate.logoutSuccessHandler, 100);
+        }
+    },
+    /** Generate appropriate time to expire cookies, same as normal */
+    cookieExpiration:function(exdays){
+        var d = new Date();
+        d.setTime(d.getTime() + (exdays*24*60*60*1000));
+        var expires =  d.toUTCString();
+        return expires;
+    },
+    /** Parse parameters from alias. If aliasCookie not given as param, reads cookie
+     * @return username, uuid pair */
+    getAliasParameters:function(aliasCookie){
+        if(!aliasCookie)
+            aliasCookie = decodeURI(cmg.query.cookie('alias'));
+        var sURLVariables = aliasCookie.split('&');
+        var aliasVariables= {};
+        for (var i = 0; i < sURLVariables.length; i++)
+        {
+            var sParameterName = sURLVariables[i].split('=');
+            aliasVariables[sParameterName[0]] = sParameterName[1];
+        }
+        return aliasVariables;
+    },
+    /** Set ur_uuid and ur_name values based on the values of the alias cookie */
+    setMySiteCookies:function(alias){
+        var ur_uuid = alias.u;
+        var ur_name = alias.n;
+        var expiration = plate.cookieExpiration(90);
+        document.cookie='ur_uuid=' + ur_uuid + '; path=/;expires=' + expiration;
+        document.cookie='ur_name=' + ur_name + '; path=/;expires=' + expiration;
+    },
+    /** Show or hide premium content or roadblock depending on plate.authorized.  */
+    togglePremium:function(authorized){
+        if(authorized || !plate.premium){
+            cmg.query('.premium-content').show();window.dispatchEvent(new Event('resize'));
+            cmg.query('.invitation_chunk, .janusNotAuthorized').hide();
+            /* Rendering to hidden divs causes weird display issues, this fixes */
+            window.dispatchEvent(new Event('resize'));
+        }else{
+            cmg.query('.premium-content').hide();
+            cmg.query('.invitation_chunk, .janusNotAuthorized').show();
+        }
+    },
+    /** Authorize uuid for the specified content. Handler function is called with result. */
+    authorizeUUID:function(uuid, handler){
+        auth_url = 'http://' + cmg.site_meta.domain + '/profile/janus-auth/?ur_uuid=';
+        cmg.authorization.check(auth_url + uuid, function(json) {
+            handler(json.authorized);
+        });
+    },
+    /** content marked premium */
+    premium:false,
+    /** is client currently authorized */
+    authorized:false,
+    /** Collect authorization data. Can be triggered multiple times, e.g. once
+     * from normal flow and once from SSO. Thus monitoring changed state is a
+     * race condition, so we are avoiding. */
+    setAuthorized:function(authorized){
+        plate.authorized = plate.authorized || authorized;
+        plate.togglePremium(plate.authorized);
+    },
+    /** Hold other auth related utilities to be added as listeners */
+    authHandlers:[],
+    /** Initialize the premium plate wrap code to override handlers and render chunk
+     * properly */
+    onReady:function(){
+        /* initially set roadblock state (this makes share codes happy etc) */
+        plate.togglePremium(!plate.premium);
+        /* if access meter is active, disable roadblock */
+        if(flipper.is_active('Access-Meter')){
+            plate.setAuthorized(true);
+        }
+        /* if user has alias, he is probably legit. Make more secure check later */
+        if(!flipper.is_active('B-01290'))
+            plate.setAuthorized(Boolean(cmg.query.cookie('alias')));
+        if(cmg.query.cookie('alias')){
+            /* perform more secure auth and update cookies if needed */
+            var alias = plate.getAliasParameters();
+            if(flipper.is_active('B-01290')){
+                plate.authorizeUUID(alias.u, plate.setAuthorized);
+            }
+            if(!cmg.query.cookie('ur_name') || !cmg.query.cookie('ur_uuid')){
+                plate.setMySiteCookies(alias);
+            }
+            cmg.update_auth_message();
+        }
+        plate.authHandlers.forEach(function(handler){
+            handler();
+        });
+        plate.loginSuccessHandler();
+        plate.logoutSuccessHandler();
+    },
+    /** Wait until cmg is defined to execute initializer for medley plate */
+    waitReady:function(){
+        if(window.cmg){
+            cmg.query(document).ready(function(){
+                plate.onReady();
+            });
+        }else{
+            setTimeout(function(){plate.waitReady();}, 100);
+        }
+    }
+};
+/* Delay invocation until after js loaded */
+setTimeout(function(){ plate.waitReady(); }, 0);
+</script><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><link rel="apple-touch-icon" href="http://www.mystatesman.com/favicon-apple-touch-icon.png"><meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1"><meta name="apple-mobile-web-app-title" content="myaas"><meta id="viewport" name="viewport" content="width=320"><link rel="shortcut icon" href="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/site/www_mystatesman_com/images/favicon.ico" /><link rel="apple-touch-icon" href="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/site/www_mystatesman_com/images/favicon-apple-touch-icon.png" /><script type="text/javascript" src="http://www.mystatesman.com/dolphin/js/"></script><!-- dtm header code --><script src="//assets.adobedtm.com/20d5deb47c9e7fe47a9f969db01578a739d7179d/satelliteLib-b390ecb549d616b2fefbb125cce0fa0c7637ad42.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/javascript/core.premium.js?version=2015-07-31"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/backbone-min.js"></script><script type="text/javascript">
+
+    var has_local_storage = (function () {
+        // source:
+        // https://mathiasbynens.be/notes/localstorage-pattern
+
+        var test_token = (new Date()).toString();
+        var result;
+        try {
+            localStorage.setItem(test_token, test_token);
+            result = localStorage.getItem(test_token) === test_token;
+            localStorage.removeItem(test_token);
+            return !!(result && localStorage);
+        } catch (exception) {
+            return false;
+        }
+    })();
+
+    cmg._logger = new function() {
+        var storage_logs_name = "cmg_logger";
+
+        var that = this;
+
+        if (has_local_storage) {
+            this.storage_logs = JSON.parse(
+                localStorage.getItem(storage_logs_name) || "[]"
+            );
+            if (this.storage_logs.length > 30) {
+                this.storage_logs.length = [];
+            }
+        } else {
+            this.storage_logs = [];
+        }
+
+        this.log = function (source, msg, info) {
+
+            var info = info || {};
+            var signin_selector = "#cmJanrainAuthLinks .cmUserAuthed a";
+
+            function save_logs (janrain_session_info) {
+                that.storage_logs.push({
+                    timestamp: (new Date()).toUTCString(),
+                    source: source,
+                    msg: msg,
+                    path: window.location.href,
+                    janus_auth_cookie: cmg.query.cookie(
+                        'janus.authorization'),
+                    janrain_session_info: janrain_session_info,
+                    info: info,
+                });
+
+                if (has_local_storage) {
+                    localStorage.setItem(storage_logs_name,
+                                         JSON.stringify(that.storage_logs));
+                } else {
+                    console.log(
+                        "LOG Info not saved to storage because localStorage is not available")
+                }
+                console.log("LOGS:  ", msg, info,
+                            "For details look in cmg._logger.storage_logs");
+            }
+
+            if (typeof(janrain) !== "undefined") {
+                // We're interested in instances where the user has signed in to Janrain
+
+                if (typeof(janrain.capture) === "undefined") {
+                    janrain.on("cmg_ready", function () {
+                        janrain.events.onCaptureSessionFound.addHandler(function (result){
+                            save_logs({
+                                token: result,
+                                signin: cmg.query(signin_selector).eq(0).text(),
+                            });
+                        });
+                    });
+                } else if (janrain.capture.ui.hasActiveSession()) {
+                    save_logs({
+                        has_active_session: true,
+                        signin: cmg.query(signin_selector).eq(0).text(),
+                    });
+                }
+            } else {
+                save_logs("janrain not defined at log time");
+            }
+        }
+    };
+
+    function premium_failed_fetch_handler_after_janrain_session(log_source, log_msg, log_info) {
+        cmg._logger.log(log_source, log_msg, log_info);
+
+        
+    }
+
+    
+
+    cmg.mediaurl = 'http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/';
+    cmg.site_meta = {
+        domain: 'www.mystatesman.com',
+        media_type: 'premium',
+        site_name: 'myaas',
+        premium_status: ''
+    };
+    
+    cmg.parse_qs = function parse_qs(str) {
+        if (!str) { return {}; }
+        if (str[0] === '?') { str = str.slice(1); }
+        var ret = {};
+        var query_args = str.split('&');
+        for (var key in query_args) {
+            if (!query_args.hasOwnProperty(key)) { continue; }
+            var tuple = query_args[key].split('=');
+            ret[tuple[0]] = tuple[1];
+        }
+        return ret;
+    };
+
+    cmg.update_auth_message = function() {
+        var id = '#cmJanrainAuthLinks';
+        var cookie = cmg.query.cookie('ur_name', {path:'/'});
+        if (typeof cookie === 'string') {
+            if (cookie.length > 14) {
+                cookie = cookie.slice(0,11) + '...';
+            }
+
+            
+            
+                this.query(id+' .cmUserAuthed a:first-child').text(cookie);
+            
+            this.query(id+' .cmUserAuthed').show();
+            this.query(id+' .cmUserAnonymous').hide();
+        } else {
+            this.query(id+' .cmUserAuthed').hide();
+            this.query(id+' .cmUserAnonymous').show();
+        }
+        this.query('#cmHeaderUserRegistration').css('visibility', 'visible');
+    }
+
+    var metrics_signin = 0;
+
+    
+    cmg.query.ajaxSetup({ cache: true });
+
+    
+    
+</script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/cmg-subnav.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/lib/lazythumbs/js/lazythumbs.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/javascript/jquery.mobile-events.min.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/jquery.placeholder.min.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/javascript/writeCapture.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/javascript/jquery.writeCapture.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/javascript/marimo.js"></script><script type="text/javascript">marimo.init(cmg.query);</script><!-- these are all the possible bootstrap plugins you can use, disabled until we need them --><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/bootstrap-transition.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/bootstrap-modalmanager.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/bootstrap-modal-ext.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/bootstrap-dropdown.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/bootstrap-collapse.js"></script><script type="text/javascript">
+    cmg.janrain_capture_server = 'https://users.cmgdigital.com';
+    cmg.janrain_js_url = 'widget-cdn.rpxnow.com/load/login.cmgdigital.com';
+    cmg.janrain_app_id = '6z4jnndkpe6dmfx7vdg4c7hkmz';
+    cmg.janrain_federate_server = 'https://sso.cmgdigital.com';
+    cmg.janrain_client_id = "3ccxh4jypd44k8qdmg2asu3hwy9ddqpx" || 'qyynzpmgrk4kgx5yg2kfurbnk639qfcf';
+</script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/javascript/loginClient/lib/loginClient.js"></script><script>
+    janrain.init();
+    janrain.on('cmg_ready', function(){ cmg.update_auth_message(); });
+</script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/javascript/jquery.ui.core.min.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/share_code.js"></script><style id="cm-adutil-styles"></style><script>(function(){var $jsi={};if(flipper.is_active('yieldbot')){window.ybotq=window.ybotq||[];}else{window.ybotq={push:function(cb){cb();}};}}());</script><script async defer src="//www.googletagservices.com/tag/js/gpt.js"></script><script>
+    var googletag = googletag || {},
+        ybotq = ybotq || [];
+
+    googletag.cmd = googletag.cmd || [];
+    cmg.harmony = Harmony();
+    cmg.ads.size.expand();
+
+    ybotq.push(function () {
+        googletag.cmd.push(function () {
+            var urlparams,
+                pubads = googletag.pubads();
+
+            pubads.set('page_url', location.href);
+            pubads.collapseEmptyDivs(true);
+
+            
+                urlparams = cmg.utility.getURLParamDict(location.search);
+                cmg.harmony.load({
+                    targeting: {
+                        wrap_token: location.pathname.split('/'),
+                        wrap_url: location.hostname,
+                        wrap_key: cmg._(urlparams).keys(),
+                        wrap_value: cmg._(urlparams).values(),
+                        wrap_meta: cmg.utility.getMetaKeywords()
+                    }
+                });
+            
+        });
+    });
+</script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/javascript/ndn_script_injector.js"></script><!-- Begin comScore Tag --><script type="text/javascript">
+      var _comscore = _comscore || [];
+      _comscore.push({ c1: "2", c2: "6035944" });
+      (function() {
+        var s = document.createElement("script"), el = document.getElementsByTagName("script")[0]; s.async = true;
+        s.src = (document.location.protocol == "https:" ? "https://sb" : "http://b") + ".scorecardresearch.com/beacon.js";
+        el.parentNode.insertBefore(s, el);
+      })();
+    </script><noscript><img src="http://b.scorecardresearch.com/p?c1=2&c2=6035944&cv=2.0&cj=1" /></noscript><!-- End comScore Tag --><!-- begin google analytics --><script type="text/javascript">
+      var _gaq = _gaq || [];
+      _gaq.push(['_setAccount', "UA-12967861-32"]);
+      _gaq.push(['_trackPageview']);
+      (function() {
+        var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+        ga.src = ('https:' == document.location.protocol ? 'https://' : 'http://') + 'stats.g.doubleclick.net/dc.js';
+        var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+      })();
+    </script><!-- end google analytics -->
+
+
+
+<script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/javascript/qualtrics.js?zid=ZN_abfOISyb898XBuB&rate=100"></script>
+
+
+    
+
+    <style>
+.header .header-logo  {
+    box-sizing: content-box;
+}
+.header a {
+    color: transparent;
+}
+.header .right .header-text:hover {
+    border-color: transparent;
+}
+.section-navigation {
+    position: fixed;
+    top: 42px;
+}
+.section-header {
+    display: none;
+}
+#story-body .premium-content .story .section-title {
+    margin-top: 0px;
+}
+</style>
+<script>(function(k){if(typeof(k)==="undefined"){k={}}if(typeof(k.performance)==="undefined"){k.performance={}}k.performance.userTimingJsNow=false;k.performance.userTimingJsNowPrefixed=false;k.performance.userTimingJsUserTiming=false;k.performance.userTimingJsUserTimingPrefixed=false;k.performance.userTimingJsPerformanceTimeline=false;k.performance.userTimingJsPerformanceTimelinePrefixed=false;var f=[];var b=[];var d=null;var g,e;if(typeof(k.performance.now)!=="function"){k.performance.userTimingJsNow=true;b=["webkitNow","msNow","mozNow"];for(g=0;g<b.length;g++){if(typeof(k.performance[b[g]])==="function"){k.performance.now=k.performance[b[g]];k.performance.userTimingJsNowPrefixed=true;break}}var l=+(new Date());if(k.performance.timing&&k.performance.timing.navigationStart){l=k.performance.timing.navigationStart}if(typeof(k.performance.now)!=="function"){if(Date.now){k.performance.now=function(){return Date.now()-l}}else{k.performance.now=function(){return +(new Date())-l}}}}var h=function(){};var a=function(){};var o=[];var n=false;if(typeof(k.performance.getEntries)!=="function"){k.performance.userTimingJsPerformanceTimeline=true;f=["webkit","moz"];b=["getEntries","getEntriesByName","getEntriesByType"];for(g=0;g<b.length;g++){for(e=0;e<f.length;e++){d=f[e]+b[g].substr(0,1).toUpperCase()+b[g].substr(1);if(typeof(k.performance[d])==="function"){k.performance[b[g]]=k.performance[d];k.performance.userTimingJsPerformanceTimelinePrefixed=true}}}h=function(i){o.push(i);if(i.entryType==="measure"){n=true}};var c=function(){if(!n){return}o.sort(function(j,i){return j.startTime-i.startTime});n=false};a=function(j,i){g=0;while(g<o.length){if(o[g].entryType!==j){g++;continue}if(typeof(i)!=="undefined"&&o[g].name!==i){g++;continue}o.splice(g,1)}};if(typeof(k.performance.getEntries)!=="function"){k.performance.getEntries=function(){c();return o.slice(0)}}if(typeof(k.performance.getEntriesByType)!=="function"){k.performance.getEntriesByType=function(j){if(typeof(j)==="undefined"||(j!=="mark"&&j!=="measure")){return[]}if(j==="measure"){c()}var i=[];for(g=0;g<o.length;g++){if(o[g].entryType===j){i.push(o[g])}}return i}}if(typeof(k.performance.getEntriesByName)!=="function"){k.performance.getEntriesByName=function(j,p){if(p&&p!=="mark"&&p!=="measure"){return[]}if(typeof(p)!=="undefined"&&p==="measure"){c()}var i=[];for(g=0;g<o.length;g++){if(typeof(p)!=="undefined"&&o[g].entryType!==p){continue}if(o[g].name===j){i.push(o[g])}}return i}}}if(typeof(k.performance.mark)!=="function"){k.performance.userTimingJsUserTiming=true;f=["webkit","moz","ms"];b=["mark","measure","clearMarks","clearMeasures"];for(g=0;g<b.length;g++){for(e=0;e<f.length;e++){d=f[e]+b[g].substr(0,1).toUpperCase()+b[g].substr(1);if(typeof(k.performance[d])==="function"){k.performance[b[g]]=k.performance[d];k.performance.userTimingJsUserTimingPrefixed=true}}}var m={};if(typeof(k.performance.mark)!=="function"){k.performance.mark=function(j){var i=k.performance.now();if(typeof(j)==="undefined"){throw new SyntaxError("Mark name must be specified")}if(k.performance.timing&&j in k.performance.timing){throw new SyntaxError("Mark name is not allowed")}if(!m[j]){m[j]=[]}m[j].push(i);h({entryType:"mark",name:j,startTime:i,duration:0})}}if(typeof(k.performance.clearMarks)!=="function"){k.performance.clearMarks=function(i){if(!i){m={}}else{m[i]=[]}a("mark",i)}}if(typeof(k.performance.measure)!=="function"){k.performance.measure=function(r,s,p){var i=k.performance.now();if(!r){throw new Error("Measure must be specified")}if(!s){h({entryType:"measure",name:r,startTime:0,duration:i});return}var j=0;if(k.performance.timing&&s in k.performance.timing){if(s!=="navigationStart"&&k.performance.timing[s]===0){throw new Error(s+" has a timing of 0")}j=k.performance.timing[s]-k.performance.timing.navigationStart}else{if(s in m){j=m[s][m[s].length-1]}else{throw new Error(s+" mark not found")}}var q=i;if(p){q=0;if(k.performance.timing&&p in k.performance.timing){if(p!=="navigationStart"&&k.performance.timing[p]===0){throw new Error(p+" has a timing of 0")}q=k.performance.timing[p]-k.performance.timing.navigationStart}else{if(p in m){q=m[p][m[p].length-1]}else{throw new Error(p+" mark not found")}}}var t=q-j;h({entryType:"measure",name:r,startTime:j,duration:t})}}if(typeof(k.performance.clearMeasures)!=="function"){k.performance.clearMeasures=function(i){a("measure",i)}}}if(typeof define!=="undefined"&&define.amd){define([],function(){return k.performance})}else{if(typeof module!=="undefined"&&typeof(module.exports)!=="undefined"){module.exports=k.performance}}}(typeof(window)!=="undefined"?window:undefined));</script><script>performance.mark('headStart');</script><meta charset="utf-8"/><meta content="IE=edge,chrome=1" http-equiv="X-UA-Compatible"/><title>Keeping the doors open: Wimberley businesses bouncing back from floods</title><meta content="width=device-width,initial-scale=1.0,maximum-scale=1.0" name="viewport"/><meta content="While tourist traffic is still well below the normal for the Hill Country town, business is slowly picking back up after the Memorial Day floods." property="description"/><meta content="Wimberley, Memorial Day floods, Central Texas, 7A Resort, Blanco River" property="news_keywords"/><meta content="article" property="og:type"/><meta content="Keeping the doors open: Wimberley businesses bouncing back from floods" property="og:title"/><meta content="While tourist traffic is still well below the normal for the Hill Country town, business is slowly picking back up after the Memorial Day floods." property="og:description"/><meta content="http://projects.statesman.com/news/wimberley-flood-recovery//media/slt_wimb_biz_12-resized-lr.jpg" property="og:image"/><script>
+        (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+        (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+        m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+        })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+    </script><link href="./static/css/common.2176.css" rel="stylesheet" type="text/css"/><link href="./static/css/story.2176.css" rel="stylesheet" type="text/css"/><link href="//fonts.googleapis.com/css?family=Lato:300,400,700,900,300italic,400italic,700italic,900italic|PT+Serif:400,700,400italic,700italic" rel="stylesheet" type="text/css"/><link href="//fonts.googleapis.com/css?family=Merriweather:400italic,400,700,700italic|Open+Sans:400italic,700italic,400,700" rel="stylesheet" type="text/css"/><script type="text/javascript">
+var googletag = googletag || {};
+googletag.cmd = googletag.cmd || [];
+(function() {
+var gads = document.createElement('script');
+gads.async = true;
+gads.type = 'text/javascript';
+var useSSL = 'https:' == document.location.protocol;
+gads.src = (useSSL ? 'https:' : 'http:') + 
+'//www.googletagservices.com/tag/js/gpt.js';
+var node = document.getElementsByTagName('script')[0];
+node.parentNode.insertBefore(gads, node);
+})();
+</script><style type="text/css">
+.story .section-header a:hover{border:none}@media (max-width:1100px){.story .small-inline{text-align:center}}@media (max-width:755px){.story .heading-block p,.story .heading-block h3,.story .st-text-block--heading{font-size:140%}.story .quote-block blockquote,.story blockquote{font-size:130%}}
+</style><style>
+.story{color:#000}.story .main-column p{color:#000}.story ::selection{background:#a41e25;color:white}#story-body .story .section-header{height:42px;position:fixed;z-index:3;top:0}.story .section-header .header-panel{display:none}.story .navigation .section-navigation{background-color:#242222;opacity:.97}#story-body .story .navigation .section-navigation{position:fixed;top:42px}.story .navigation .section-navigation a,.story .navigation .section-navigation a:visited{font-family:Arial,sans-serif;text-transform:uppercase;font-weight:normal;color:white}.story .navigation .section-navigation a.active,.story .navigation .section-navigation a:visited.active{border-bottom:3px solid #a41e25}.story .section{font-family:'Open Sans','Helvetica Neue',Helvetica,Arial,sans-serif}.story .scrollmation-background,.story .section-text,.story .scrollmation-two-column{font-family:'Open Sans','Helvetica Neue',Helvetica,Arial,sans-serif}.story .scrollmation-background .caption,.story .section-text .caption,.story .scrollmation-two-column .caption{color:#000 !important;font-style:normal;font-family:'Open Sans','Helvetica Neue',Helvetica,Arial,sans-serif}.story .scrollmation-background .main-column,.story .section-text .main-column,.story .scrollmation-two-column .main-column{color:#000}.story .scrollmation-background .main-column a,.story .section-text .main-column a,.story .scrollmation-two-column .main-column a,.story .scrollmation-background .main-column a:visited,.story .section-text .main-column a:visited,.story .scrollmation-two-column .main-column a:visited{color:#00579e}.story .scrollmation-background .main-column .heading-block p,.story .section-text .main-column .heading-block p,.story .scrollmation-two-column .main-column .heading-block p,.story .scrollmation-background .main-column .heading-block h3,.story .section-text .main-column .heading-block h3,.story .scrollmation-two-column .main-column .heading-block h3,.story .scrollmation-background .main-column .st-text-block--heading,.story .section-text .main-column .st-text-block--heading,.story .scrollmation-two-column .main-column .st-text-block--heading{color:#000;font-family:'Open Sans','Helvetica Neue',Helvetica,Arial,sans-serif}.story .scrollmation-background .main-column .st-block[data-type=Quote] .st-block__inner,.story .section-text .main-column .st-block[data-type=Quote] .st-block__inner,.story .scrollmation-two-column .main-column .st-block[data-type=Quote] .st-block__inner,.story .scrollmation-background .main-column .quote-block,.story .section-text .main-column .quote-block,.story .scrollmation-two-column .main-column .quote-block{border:none}.story .scrollmation-background .main-column .st-block[data-type=Quote] .st-block__inner .quote-cite,.story .section-text .main-column .st-block[data-type=Quote] .st-block__inner .quote-cite,.story .scrollmation-two-column .main-column .st-block[data-type=Quote] .st-block__inner .quote-cite,.story .scrollmation-background .main-column .quote-block .quote-cite,.story .section-text .main-column .quote-block .quote-cite,.story .scrollmation-two-column .main-column .quote-block .quote-cite{color:#000;font-style:normal}.story .scrollmation-background .main-column .st-block[data-type=Quote] .st-block__inner blockquote,.story .section-text .main-column .st-block[data-type=Quote] .st-block__inner blockquote,.story .scrollmation-two-column .main-column .st-block[data-type=Quote] .st-block__inner blockquote,.story .scrollmation-background .main-column .quote-block blockquote,.story .section-text .main-column .quote-block blockquote,.story .scrollmation-two-column .main-column .quote-block blockquote,.story .scrollmation-background .main-column blockquote,.story .section-text .main-column blockquote,.story .scrollmation-two-column .main-column blockquote{color:#a41e25;font-family:'Merriweather',serif;font-style:normal}.story .scrollmation-background .main-column .st-block[data-type=Quote] .st-block__inner blockquote p,.story .section-text .main-column .st-block[data-type=Quote] .st-block__inner blockquote p,.story .scrollmation-two-column .main-column .st-block[data-type=Quote] .st-block__inner blockquote p,.story .scrollmation-background .main-column .quote-block blockquote p,.story .section-text .main-column .quote-block blockquote p,.story .scrollmation-two-column .main-column .quote-block blockquote p,.story .scrollmation-background .main-column blockquote p,.story .section-text .main-column blockquote p,.story .scrollmation-two-column .main-column blockquote p{color:#a41e25}.story .scrollmation-two-column .scrollmation-slide{padding-top:85px}.story .section-text-over-media{background-color:#242222}.story .section-text-over-media .text-inner{font-family:'Merriweather',serif}#story-body .story .section-title{margin-top:42px}.story .section-title .story-title{font-family:'Merriweather',serif}.story .section-title .story-heading{font-family:'Open Sans','Helvetica Neue',Helvetica,Arial,sans-serif}.story .section-title .story-metadata,.story .section-title .story-metadata .text-inner{font-family:'Open Sans','Helvetica Neue',Helvetica,Arial,sans-serif;font-weight:normal;text-shadow:none}.story .section-html,.story .custom-html-section{font-family:'Open Sans','Helvetica Neue',Helvetica,Arial,sans-serif;background:white}@media (max-width:1100px){#story-body .story .section-header{display:block;z-index:900;background-color:rgba(255,255,255,0.9);width:50px;height:48px;padding:10px 12px;right:10px;left:auto;top:52px;border-radius:5px}.story .section-header .nav-required{float:none}}
+</style><style id="custom-css" type="text/css">
+    /**********************************************
+* You can override the css for your story here
+* Don't forget to test any changes you make!
+/**********************************************/
+
+  </style><script charset="utf-8" src="./static/js/head.2176.js" type="text/javascript"></script><!--[if IE 8]>
+      <script>
+        videojs.options.flash.swf = "./static/components/videojs/video-js.swf"
+      </script>
+    <![endif]--><script>(function(p, w, de) {
+  'use strict';
+  p.mark('startImages');
+
+  var assets;
+  try {
+    assets = JSON.parse('[[\u0022title\u0022, {\u0022portrait\u0022: {\u0022width\u0022: 1440, \u0022ratio\u0022: 0.5625, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_12\u002Dresizedvertical\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_12\u002Dresizedvertical\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_12\u002Dresizedvertical\u002Dlr.jpg\u0022, \u0022height\u0022: 2560}, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 2560, \u0022ratio\u0022: 1.7777777777777777, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_12\u002Dresized\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_12\u002Dresized\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_12\u002Dresized\u002Dlr.jpg\u0022, \u0022height\u0022: 1440}}], [\u0022text\u002Dover\u002Dmedia\u0022, {\u0022portrait\u0022: {\u0022width\u0022: 1440, \u0022ratio\u0022: 0.5625, \u0022high_res_image\u0022: \u0022./media/klw_wimberley_08\u002Dresizedvertical\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/klw_wimberley_08\u002Dresizedvertical\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/klw_wimberley_08\u002Dresizedvertical\u002Dlr.jpg\u0022, \u0022height\u0022: 2560}, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 2560, \u0022ratio\u0022: 1.7777777777777777, \u0022high_res_image\u0022: \u0022./media/klw_wimberley_08\u002Dresized\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/klw_wimberley_08\u002Dresized\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/klw_wimberley_08\u002Dresized\u002Dlr.jpg\u0022, \u0022height\u0022: 1440}}], [\u0022text\u002Dover\u002Dmedia\u0022, {\u0022portrait\u0022: {\u0022width\u0022: 1440, \u0022ratio\u0022: 0.5625, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_10\u002Dresizedvertical\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_10\u002Dresizedvertical\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_10\u002Dresizedvertical\u002Dlr.jpg\u0022, \u0022height\u0022: 2560}, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 2560, \u0022ratio\u0022: 1.7777777777777777, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_10\u002Dresized\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_10\u002Dresized\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_10\u002Dresized\u002Dlr.jpg\u0022, \u0022height\u0022: 1440}}], [\u0022scrollmation\u002Dtwo\u002Dcolumn\u0022, {\u0022portrait\u0022: null, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 700, \u0022ratio\u0022: 1.4989293361884368, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_11\u002Dresized\u002Dhr_ptvtwc5.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_11\u002Dresized\u002Dmr_8jhwgsb.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_11\u002Dresized\u002Dlr_wgsqtgn.jpg\u0022, \u0022height\u0022: 467}}, {\u0022portrait\u0022: null, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 700, \u0022ratio\u0022: 1.4989293361884368, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_13\u002Dresized\u002Dhr_cntrqeg.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_13\u002Dresized\u002Dmr_42qjwaa.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_13\u002Dresized\u002Dlr_9iyihrz.jpg\u0022, \u0022height\u0022: 467}}], [\u0022text\u002Dover\u002Dmedia\u0022, {\u0022portrait\u0022: {\u0022width\u0022: 1440, \u0022ratio\u0022: 0.5625, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_01\u002Dresizedvertical\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_01\u002Dresizedvertical\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_01\u002Dresizedvertical\u002Dlr.jpg\u0022, \u0022height\u0022: 2560}, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 2560, \u0022ratio\u0022: 1.7777777777777777, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_01\u002Dresized\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_01\u002Dresized\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_01\u002Dresized\u002Dlr.jpg\u0022, \u0022height\u0022: 1440}}], [\u0022scrollmation\u002Dtwo\u002Dcolumn\u0022, {\u0022portrait\u0022: null, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 700, \u0022ratio\u0022: 1.4989293361884368, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_07\u002Dresized\u002Dhr_kyck9y3.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_07\u002Dresized\u002Dmr_z36xfkt.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_07\u002Dresized\u002Dlr_3sdeabs.jpg\u0022, \u0022height\u0022: 467}}, {\u0022portrait\u0022: null, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 700, \u0022ratio\u0022: 1.4989293361884368, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_03\u002Dresized\u002Dhr_zmaniu9.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_03\u002Dresized\u002Dmr_6seclzt.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_03\u002Dresized\u002Dlr_dvy3ao1.jpg\u0022, \u0022height\u0022: 467}}], [\u0022text\u002Dover\u002Dmedia\u0022, {\u0022portrait\u0022: {\u0022width\u0022: 1440, \u0022ratio\u0022: 0.5625, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_04\u002Dresizedvertical\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_04\u002Dresizedvertical\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_04\u002Dresizedvertical\u002Dlr.jpg\u0022, \u0022height\u0022: 2560}, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 2560, \u0022ratio\u0022: 1.7777777777777777, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_04\u002Dresized\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_04\u002Dresized\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_04\u002Dresized\u002Dlr.jpg\u0022, \u0022height\u0022: 1440}}], [\u0022text\u002Dover\u002Dmedia\u0022, {\u0022portrait\u0022: {\u0022width\u0022: 1440, \u0022ratio\u0022: 0.5625, \u0022high_res_image\u0022: \u0022./media/rgz_blanco_river_flood_03a\u002Dresizedvertical\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/rgz_blanco_river_flood_03a\u002Dresizedvertical\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/rgz_blanco_river_flood_03a\u002Dresizedvertical\u002Dlr.jpg\u0022, \u0022height\u0022: 2560}, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 2560, \u0022ratio\u0022: 1.7777777777777777, \u0022high_res_image\u0022: \u0022./media/rgz_blanco_river_flood_03a\u002Dresized\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/rgz_blanco_river_flood_03a\u002Dresized\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/rgz_blanco_river_flood_03a\u002Dresized\u002Dlr.jpg\u0022, \u0022height\u0022: 1440}}], [\u0022scrollmation\u002Dtwo\u002Dcolumn\u0022, {\u0022portrait\u0022: null, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 638, \u0022ratio\u0022: 1.7722222222222221, \u0022high_res_image\u0022: \u0022./media/rgz_cleanup_3\u002Dresized\u002Dhr_yc9wxbc.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/rgz_cleanup_3\u002Dresized\u002Dmr_3f3bbin.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/rgz_cleanup_3\u002Dresized\u002Dlr_2qvsoup.jpg\u0022, \u0022height\u0022: 360}}], [\u0022text\u002Dover\u002Dmedia\u0022, {\u0022portrait\u0022: {\u0022width\u0022: 1440, \u0022ratio\u0022: 0.5625, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_05\u002Dresizedvertical\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_05\u002Dresizedvertical\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_05\u002Dresizedvertical\u002Dlr.jpg\u0022, \u0022height\u0022: 2560}, \u0022media_type\u0022: \u0022image\u0022, \u0022landscape\u0022: {\u0022width\u0022: 2560, \u0022ratio\u0022: 1.7777777777777777, \u0022high_res_image\u0022: \u0022./media/slt_wimb_biz_05\u002Dresized\u002Dhr.jpg\u0022, \u0022medium_res_image\u0022: \u0022./media/slt_wimb_biz_05\u002Dresized\u002Dmr.jpg\u0022, \u0022low_res_image\u0022: \u0022./media/slt_wimb_biz_05\u002Dresized\u002Dlr.jpg\u0022, \u0022height\u0022: 1440}}], [\u0022inline\u0022]]')
+  } catch(e) {}
+
+  var AssetPreloader = {
+    assets: assets,
+    vw: w.innerWidth || de.clientWidth,
+    vh: w.innerHeight || de.clientHeight
+  };
+  AssetPreloader.isPortrait = AssetPreloader.vh > AssetPreloader.vw;
+  AssetPreloader.twoColumnScrollmationRes = AssetPreloader.inlineRes = (AssetPreloader.vw < 755) ? 'low' : 'medium';
+
+  // Calculate which resolution images we want
+  if (AssetPreloader.vw < 755) {
+    AssetPreloader.res = 'low';
+  } else if (AssetPreloader.vw < 1400) {
+    AssetPreloader.res = 'medium';
+  } else if (AssetPreloader.vw > 1400) {
+    AssetPreloader.res = 'high';
+  }
+
+  /**
+   * Copyright (c) Mozilla Foundation http://www.mozilla.org/
+   * This code is available under the terms of the MIT License
+   */
+  if (!Array.prototype.forEach) { Array.prototype.forEach = function(fun /*, thisp*/) { var len = this.length >>> 0; if (typeof fun != "function") { throw new TypeError(); } var thisp = arguments[1]; for (var i = 0; i < len; i++) { if (i in this) { fun.call(thisp, this[i], i, this); } } }; }
+
+  AssetPreloader.loadImage = function(image, res, sectionType, onLoad) {
+    if (image.media_type !== 'image') {
+      return;
+    }
+
+    var img = new Image();
+    var orientation = (AssetPreloader.isPortrait && image.portrait !== null) ? 'portrait' : 'landscape';
+    img.src = image[orientation][res + '_res_image'];
+    img.onload = function() {
+      p.mark(sectionType + 'ImageLoaded');
+      onLoad();
+    };
+  }
+
+  var VIDEO_FILE_TYPES = {
+    'video/mp4': 'h264',
+    'video/webm': 'webm'
+  }
+
+  AssetPreloader.loadVideo = function(videoFiles, onLoad) {
+    if (!Modernizr.video) {
+      return false;
+    }
+
+    var video = document.createElement('video');
+    for (var i = 0, l = videoFiles.length; i < l; i++) {
+      var videoFile = videoFiles[i];
+      var videoType = VIDEO_FILE_TYPES[videoFile.encoding];
+
+      if (Modernizr.video[videoType] === 'probably') {
+        video.src = videoFile.filename;
+        video.addEventListener('canplaythrough', function() {
+          onLoad();
+        });
+        video.load();
+        break;
+      }
+    }
+  }
+
+  AssetPreloader.createSectionLoadingTracker = function(trackerName, imagesLength) {
+    p.mark(trackerName+'Loading');
+    var imagesLoaded = 0;
+
+    return function() {
+      imagesLoaded += 1;
+
+      if (imagesLoaded === imagesLength) {
+        p.mark(trackerName + 'Loaded');
+      }
+    };
+  }
+
+  AssetPreloader.createTimingMeasures = function(trackerName) {
+    return function() {
+      try {
+        p.measure(trackerName + 'LoadedTime', trackerName + 'Loading', trackerName + 'Loaded');
+        p.measure(trackerName + 'EndTime', 'fetchStart', trackerName + 'Loaded');
+      } catch(e) {}
+    };
+  }
+
+  var SectionLoaders = AssetPreloader.SectionLoaders = {};
+
+  SectionLoaders['text-over-media'] = function(sectionMedia, res, sectionType, loadingTracker) {
+    sectionMedia = sectionMedia[0];
+    if (sectionMedia.media_type === 'image') {
+      AssetPreloader.loadImage(sectionMedia, res, sectionType, loadingTracker);
+    }
+  };
+
+  SectionLoaders['title'] = function(sectionMedia, res, sectionType, loadingTracker) {
+    sectionMedia = sectionMedia[0];
+    if (sectionMedia.media_type === 'image') {
+      AssetPreloader.loadImage(sectionMedia, res, sectionType, loadingTracker);
+    } else if (sectionMedia.media_type === 'video') {
+      AssetPreloader.loadVideo(sectionMedia.video_files, loadingTracker);
+    }
+  };
+
+  SectionLoaders['scrollmation-two-column'] = function(sectionMedia, res, sectionType, loadingTracker) {
+    res = AssetPreloader.twoColumnScrollmationRes;
+    sectionMedia.forEach(function(media) {
+      AssetPreloader.loadImage(media, res, sectionType, loadingTracker);
+    });
+  };
+
+  SectionLoaders['scrollmation-background'] = function(sectionMedia, res, sectionType, loadingTracker) {
+    sectionMedia.forEach(function(media) {
+      AssetPreloader.loadImage(media, res, sectionType, loadingTracker);
+    });
+  };
+
+  SectionLoaders['media'] = function(sectionMedia, res, sectionType, loadingTracker) {
+    res = 'medium';
+    if ('poster' in sectionMedia[0]) {
+      AssetPreloader.loadImage(sectionMedia[0].poster, res, sectionType, loadingTracker);
+    }
+  };
+
+  SectionLoaders['inline'] = function(sectionMedia, res, sectionType, loadingTracker) {
+    res = AssetPreloader.inlineRes;
+    sectionMedia.forEach(function(image) {
+      AssetPreloader.loadImage(image, res, sectionType, loadingTracker);
+    });
+  };
+
+  AssetPreloader.loadSectionAssets = function(section, i) {
+    var sectionType = section[0];
+    var sectionMedia = section.slice(1);
+    var sectionMediaLength = sectionMedia.length;
+    // Number is padded with a zero where required
+    // Incremented so we start at one and not zero
+    var sectionNumber = (i+1 < 10) ? '0' + (i+1) : i+1;
+    var trackerName = 's' + sectionNumber;
+    var loadingTracker = AssetPreloader.createSectionLoadingTracker(trackerName, sectionMediaLength);
+
+    SectionLoaders[sectionType](sectionMedia, AssetPreloader.res, sectionType, loadingTracker);
+
+    if (window.addEventListener) {
+      window.addEventListener('load', AssetPreloader.createTimingMeasures(trackerName));
+    } else if (window.attachEvent) {
+      window.attachEvent('onload', AssetPreloader.createTimingMeasures(trackerName));
+    }
+  };
+
+  AssetPreloader.loadAssets = function(assets) {
+    if (!assets) { return; }
+    assets.forEach(AssetPreloader.loadSectionAssets);
+  };
+
+  AssetPreloader.loadAssets(AssetPreloader.assets);
+
+  p.mark('endImages');
+  p.measure('imagesTime', 'startImages', 'endImages');
+
+  window.AssetPreloader = AssetPreloader;
+}(window.performance, window, document.documentElement));</script><script>
+  Device.isIE11 = function() { return true; };
+</script><script>
+      if (document.documentElement && Device.isMacRetinaChrome()) {
+        document.documentElement.className += ' mac-retina-chrome';
+      }
+    </script><script>performance.mark('headEnd');</script>
+    
+    <link rel="stylesheet" href="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/css/minimalist.css" /><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/minimalist.js"></script></head><body id="story-body" class="body"><div class="container header top fixed"><div><div class="left"><a href="http://www.mystatesman.com"><img src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/site/www_mystatesman_com/images/mystatesman.svg" name="www.mystatesman.com" class="header-logo"></a></div><div class="right"><a class="facebook-link popup" href="http://www.facebook.com/statesman
+"><img class="facebook" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/images/minimalist/facebook.png"></a><a class="twitter-link popup" href="https://twitter.com/statesman
+"><img class="twitter" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/images/minimalist/twitter.svg"></a><a class="header-button subscribe-link" href="https://myaccount.statesman.com/dsssubscribe.aspx
+">SUBSCRIBE</a><div class="authentication-change"><a class="header-text cmOpenJanrainModal cmUserAnonymous" href="#">LOG IN</a><a class="prepend-site header-text cmUserAuthed cmLogout" data-href="auth/logout" href="http://www.mystatesman.com/auth/logout">LOG OUT</a></div></a><div id="cmJanrainAuthLinks"><p class="cmUserAuthed"><a class="prepend-site cmLogout" data-href="auth/logout" href="http://www.mystatesman.com/auth/logout"><img class="profile profile-authed" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/images/minimalist/profile.svg"></a></p><p class="cmUserAnonymous"><a class="cmOpenJanrainModal" href="#"><img class="profile profile-anonymous" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/images/minimalist/profile.svg"></a></p></div></div><div style="display:none;" id="signIn"><div class="capture_header"><h1>Sign In / Register</h1></div><div class="capture_signin"><h2>Sign in with your existing account</h2>
+                {* loginWidget *} <br /></div><div class="capture_backgroundColor"><div class="capture_signin"><h2>Sign in with your email</h2>
+                            {* #userInformationForm *}
+                                {* traditionalSignIn_emailAddress *}
+                                {* traditionalSignIn_password *}
+                                <div class="capture_form_item">
+                                        {* traditionalSignIn_signInButton *}
+                                    <a href="#" data-capturescreen="forgotPassword" id="forgotPasswordLink">Forgot your password?</a></div>
+                            {* /userInformationForm *}
+                </div></div><div class="capture_newUser capture_signin"><h2>New User?</h2><a href="#" class="capture_btn capture_primary" data-capturescreen="traditionalRegistration">Create a New Account</a></div></div><div style="display:none;" id="returnSocial"><div class="capture_header"><h1>Sign In / Register</h1></div><div class="capture_signin"><h2>Welcome Back {* welcomeName *}</h2>
+                {* loginWidget *}
+                <div class="capture_centerText switchLink"><a href="#" data-cancelcapturereturnexperience="true">Use another account</a></div></div></div><div style="display:none;" id="returnTraditional"><div class="capture_header"><h1>Sign In / Register</h1></div><div class="capture_backgroundColor"><div class="capture_signin"><h2>Welcome back. Please sign in</h2>
+                    {* #userInformationForm *}
+                        {* traditionalSignIn_emailAddress *}
+                        {* traditionalSignIn_password *}
+                        <div class="capture_form_item">
+                            {* traditionalSignIn_signInButton *}
+                            <a href="#" data-capturescreen="forgotPassword" id="forgotPasswordLink">Forgot your password?</a></div><div class="capture_centerText switchLink"><a href="#" data-cancelcapturereturnexperience="true">Use another account</a></div>
+                    {* /userInformationForm *}
+                </div></div></div><div style="display:none;" id="socialRegistration" class="capture_lrg_footer"><div class="capture_header"><h1>You're Almost Done!</h1></div><div class="capture_signup"><h2>Select a display name and password</h2>
+                {* #socialRegistrationForm *}
+                    {* socialRegistration_displayName *}
+                    {* socialRegistration_emailAddress *}
+                    {* traditionalRegistration_password *}
+                    {* traditionalRegistration_passwordConfirm *}
+                    <h2>Tell us about yourself</h2>
+                    {* registration_firstName *}
+                    {* registration_lastName *}
+                    {* registration_postalZip *}
+                    {* registration_birthday *}
+                    {* registration_gender *}
+                    <div class="capture_form_item"><label>*Indicates Required Field</label></div>
+                    {* agreeToTerms *}
+                    <div class="capture_footer"><div class="capture_left">
+                            {* backButton *}
+                        </div><div class="capture_right">
+                        {* socialRegistration_signInButton *}
+                        </div></div>
+                {* /socialRegistrationForm *}
+            </div></div><div style="display:none;" id="traditionalRegistration"><div class="capture_header"><h1>Create a New Account</h1></div><div class="capture_signup"><h2>Select a display name and password</h2><p>Already have an account? <a href="#" data-capturescreen="signIn">Sign In</a></p>
+                {* #registrationForm *}
+                    {* traditionalRegistration_displayName *}
+                    {* traditionalRegistration_emailAddress *}
+                    {* traditionalRegistration_password *}
+                    {* traditionalRegistration_passwordConfirm *}
+                    <h2>Tell us about yourself</h2>
+                    {* registration_firstName *}
+                    {* registration_lastName *}
+                    {* registration_postalZip *}
+                    {* registration_birthday *}
+                    {* registration_gender *}
+                    <div class="capture_form_item"><label>*Indicates Required Field</label></div>
+                    {* agreeToTerms *}
+                    <div class="capture_footer"><div class="capture_left">
+                            {* createAccountButton *}
+                        </div></div>
+                {* /registrationForm *}
+            </div></div><div style="display:none;" id="traditionalRegistrationBlank"><div class="capture_header"><h1>Create a New Account</h1></div><div class="capture_signup"><p>Already have an account? <a href="#" data-capturescreen="signIn">Sign In</a></p>
+                {* #registrationFormBlank *}
+                    {* registration_firstName *}
+                    {* registration_lastName *}
+                    {* traditionalRegistration_displayName *}
+                    {* traditionalRegistration_emailAddressBlank *}
+                    {* registration_birthday *}
+                    {* registration_gender *}
+                    {* registration_postalZip *}
+                    {* traditionalRegistration_passwordBlank *}
+                    {* traditionalRegistration_passwordConfirmBlank *}
+                    <div class="capture_form_item"><label>*Indicates Required Field</label></div>
+                    {* agreeToTerms *}
+                    <div class="capture_footer"><div class="capture_left">
+                            {* backButton *}
+                        </div><div class="capture_right">
+                        {* createAccountButton *}
+                        </div></div>
+                {* /registrationForm *}
+            </div></div><div style="display:none;" id="registrationSuccess"><div class="capture_header"><h1>Thank you for registering!</h1></div><div class="capture_success"><p>We have sent you a confirmation email. Please check your email and click on the link to activate your account.</p><div class="capture_footer"><span onclick="janrain.capture.ui.modal.close()" class="capture_btn capture_primary">Close</span></div></div></div><div style="display:none;" id="registrationSuccessConfirmed"><div class="capture_header"><h1>Thank you for registering!</h1></div><div class="capture_success"><p>We look forward to seeing you frequently. Visit us and sign in to update your profile, receive the latest news and keep up to date with mobile alerts.</p><div class="capture_footer"><span onclick="janrain.capture.ui.modal.close()" class="capture_btn capture_primary">Close</span></div></div></div><div style="display:none;" id="forgotPassword"><div class="capture_header"><h1>Create a new password</h1></div><div class="retrieve_password"><p>Don't worry, it happens. We'll send you a link to create a new password.</p>
+                {* #forgotPasswordForm *}
+                    {* forgotPassword_emailAddress *}
+                    <div class="capture_footer"><div class="capture_left">
+                            {* backButton *}
+                        </div><div class="capture_right">
+                            {* forgotPassword_sendButton *}
+                        </div></div>
+                {* /forgotPasswordForm *}
+            </div></div><div style="display:none;" id="forgotPasswordSuccess"><div class="capture_header"><h1>Email sent</h1></div><div class="retrieve_password"><p>We have sent you an email with a link to change your password.</p><div class="capture_footer"><a href="#" onclick="janrain.capture.ui.modal.close()" class="capture_btn capture_primary">Close</a></div></div></div><div style="display:none;" id="forgotPasswordSuccess"><div class="capture_header"><h1>Create a new password</h1></div><div class="retrieve_password"><p>We've sent an email with instructions to create a new password. Your existing password has not been changed.</p><div class="capture_footer"><a href="#" onclick="janrain.capture.ui.modal.close()" class="capture_btn capture_primary">Close</a></div></div></div><div style="display:none;" id="mergeAccounts">
+            {* mergeAccounts *}
+        </div><div style="display:none;" id="traditionalAuthenticateMerge"><div class="capture_header"><h1>Sign in to complete account merge</h1></div><div class="capture_signin">
+            {* #tradAuthenticateMergeForm *}
+                {* traditionalSignIn_emailAddress *}
+                {* mergePassword *}
+                <div class="capture_footer"><div class="capture_left">
+                        {* backButton *}
+                    </div><div class="capture_right">
+                        {* traditionalSignIn_signInButton *}
+                    </div></div>
+             {* /tradAuthenticateMergeForm *}
+            </div></div><div style="display:none;" id="resendVerification"><div class="capture_header"><h1>Resend Email Verification</h1></div><div class="retrieve_password"><p>To sign in you must verify your email address. Fill out the form below and we'll send you an email to verify.</p>
+                {* #resendVerificationForm *}
+                    {* resendVerification_emailAddress *}
+                    <div class="capture_fox_buttoncol">
+                        {* newPasswordFormButton *}
+                    </div>
+                 {* /resendVerificationForm *}
+            </div></div><div style="display:none;" id="resendVerificationSuccess"><div class="capture_header"><h1>Your Verification Email Has Been Sent</h1></div><div class="retrieve_password"><p>Check your email for a link to verify your email address.</p><div class="capture_footer"><a href="#" data-capturescreen="signIn" class="capture_btn capture_primary">Sign in</a></div></div></div></div><!-- Doubleclick Tag Manager --><noscript><iframe src="//www.googletagmanager.com/ns.html?id=GTM-WMW6FK"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript><script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'//www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-WMW6FK');</script><!-- End Doubleclick Tag Manager --><script>(function(){ 
+window._fbds = window._fbds || {}; 
+_fbds.pixelId = 1422250601354173; 
+var fbds = document.createElement('script'); 
+fbds.async = true; 
+fbds.src = '//connect.facebook.net/en_US/fbds.js'; 
+var s = document.getElementsByTagName('script')[0]; 
+s.parentNode.insertBefore(fbds, s); 
+})(); 
+window._fbq = window._fbq || []; 
+window._fbq.push(["track", "PixelInitialized", {}]); 
+</script><noscript><img height="1" width="1" border="0" alt=" style="display:none" src="https://www.facebook.com/tr?id=1422250601354173&amp;ev=NoScript" /></noscript
+<!-- Facebook Pixel Code --><script>
+!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
+document,'script','//connect.facebook.net/en_US/fbevents.js');
+
+fbq('init', '1039650726068308');
+fbq('track', 'PageView');
+</script><noscript><img height="1" width="1" style="display:none"
+src="https://www.facebook.com/tr?id=1039650726068308&ev=PageView&noscript=1"
+/></noscript><!-- End Facebook Pixel Code --><img height="1" width="1" style="border-style:none;" alt="" src="//insight.adsrvr.org/track/evnt/?adv=ha24akb&ct=0:hqhpy95t&fmt=3"/></div><div class="container content center"><script>plate.premium = true;</script><div id="flatpage_frame"><div class="flatpage_invitation_chunk"><div id="flatpage_invitation" style="display: block;">
+
+<!-- Flatpage metadata-->
+<meta name="default_overrides_flatpage_blurb" content="The article you're reading is premium content from the Austin American-Statesman. Subscribers get total access to all our in-depth news, digital editions and exclusive premium content. You can now also buy a 24-hour digital pass or 7-day digital pass." />
+
+<!-- Story metadata-->
+<meta name="override_news_story_title" content="Read the complete story... " />
+<meta name="override_news_story_blurb" content="The story you're reading is premium content from the Austin American-Statesman. Subscribers get total access to all our in-depth news, digital editions and exclusive premium content. You can now also buy a 24-hour digital pass or 7-day digital pass." />
+
+<style type="text/css">
+    a {
+        text-decoration: none;
+    }
+    #flatpage_frame {
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-size: 14px;
+        line-height: 20px;
+    }
+    .janusNotAuthorized {
+        display: inline-block;
+    }
+
+    .flatpage_invitation_chunk {
+        overflow-y: hidden !important;
+        overflow-x: hidden !important;
+        background-image: url("http://media.cmgdigital.com/shared/media/2015-05-18-13-31-16/web/common/images/paywall/paywall-background.jpeg");
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: right;
+        background-position: center center;
+    }
+
+    .cmPremiumWrap {
+        border: 1px solid #0163ac;
+        padding: 2px;
+        margin: 20px 0;
+    }
+
+    .flatpage_invitation_chunk .cmPremiumWrap {
+        margin: 12px auto;
+        width: 431px;
+    }
+
+    .flatpage_invitation_chunk .janusNotAuthorized {
+        display: block;
+    }
+
+    .cmPremium {
+        border: 2px solid #0163ac;
+        background: #fff;
+    }
+
+    .cmPremium .cmPremiumOption {
+        padding: 10px;
+    }
+
+    .cmPremium .cmPremiumOption .description {
+        float: left;
+        width: 60%;
+        padding: 0;
+    }
+
+    .cmPremium .cmPremiumOption.cmPass img{
+        float: left;
+        padding-right: 10px;
+    }
+
+    .cmPremium .description {
+        padding: 0 20px 12px 18px;
+        width: auto;
+        float: none;
+    }
+
+    .cmPremium .cmPremiumHeader {
+        padding: 12px 12px 0 18px;
+        font-size: 22px;
+        line-height: 28px;
+        font-weight: bold;
+        color: #000;
+    }
+
+    .cmPremium .cmPremiumButton {
+        display: block;
+        width: 132px;
+        float: right;
+        margin-left: 10px;
+        padding: 6px 0;
+        background: #003f74;
+        background: -webkit-gradient(linear, 0% 0%, 0% 100%, from(#004276), to(#0066b0));
+        background: -webkit-linear-gradient(top, #0066b0, #004276);
+        background: -moz-linear-gradient(top, #0066b0, #004276);
+        background: -ms-linear-gradient(top, #0066b0, #004276);
+        background: -o-linear-gradient(top, #0066b0, #004276);
+        color: #fff;
+        border: 1px solid #00009c;
+        text-align: center;
+        font-family: "Lucida Grande", "Lucida Sans Unicode", Verdana, Arial, Helvetica, sans-serif;
+        font-weight: normal;
+        -webkit-border-radius: 6px;
+        -moz-border-radius: 6px;
+        border-radius: 6px;
+    }
+
+    .cmPremium .cmPremiumOption.cmPass .cmPremiumButton {
+        background: #19612c;
+        background: -webkit-gradient(linear, 0% 0%, 0% 100%, from(#2d952f), to(#19612c));
+        background: -webkit-linear-gradient(top, #2d952f, #19612c);
+        background: -moz-linear-gradient(top, #2d952f, #19612c);
+        background: -ms-linear-gradient(top, #2d952f, #19612c);
+        background: -o-linear-gradient(top, #2d952f, #19612c);
+    }
+
+    a.cmPremiumButton:hover {
+        text-decoration: none;
+    }
+
+    .cmPremiumDivider {
+        border-top: 2px dotted #ccc;
+    }
+
+    .cmPremium .advertisements {
+        padding: 20px 0;
+        border-top: 2px dotted #ccc;
+    }
+
+    .cmPremium .advertisements a,
+    .cmPremium .advertisements span {
+        display: block;
+        float: left;
+        padding: 0 10px 0 18px;
+        font-size: 11px;
+        color: #666;
+        text-transform: none;
+    }
+
+    .cmPremium .advertisements img {
+        height: 32px;
+    }
+
+    .clearfix:after {
+        clear: both;
+        content: ' ';
+        display: block;
+        font-size: 0;
+        line-height: 0;
+        visibility: hidden;
+        width: 0;
+        height: 0;
+    }
+
+    * html.clearfix {
+        height: 1%;
+    }
+
+    .clearfix {
+        display: block;
+    }
+
+    .roadblock {
+        padding: 0;
+        border: 0;
+    }
+
+    @media (max-width: 599px) {
+        .cmPremium .cmPremiumOption .description {
+            width: 65%;
+        }
+
+        .flatpage_invitation_chunk .cmPremiumWrap {
+            width: 90%;
+        }
+    }
+
+    @media (max-width: 481px) {
+        .cmPremium .cmPremiumOption .description {
+            display: block;
+            width: auto;
+            float: none;
+        }
+
+        .cmPremium .cmPremiumOption.cmPass .description {
+            display: block;
+            width: auto;
+            float: none;
+        }
+
+        .cmPremium .cmPremiumButton {
+            float: none;
+            clear: left;
+            margin: 5px auto;
+        }
+
+        .cmPremium .advertisements a,
+        .cmPremium .advertisements span {
+            padding: 0 10px;
+        }
+    }
+</style>
+
+<div class="janusNotAuthorized">
+    <div class="cmPremiumWrap">
+        <div class="cmPremium">
+            <div class="cmPremiumHeader">Premium Content...</div>
+            <p class="description">The article you're reading is premium content from the Austin American-Statesman. Subscribers get total access to all our in-depth news, digital editions and exclusive premium content. You can now also buy a 24-hour digital pass or 7-day digital pass.</p>
+
+            <div class="cmPremiumOption clearfix">
+                <p class="description"><strong>For Subscribers:</strong> Sign in here if you have already registered your account.</p>
+                <a class="cmOpenJanrainModal cmPremiumButton getAccess" href="#">Sign In</a>
+            </div>
+
+            <div class="cmPremiumOption clearfix">
+                <p class="description"><strong>For Subscribers:</strong> Register your account for digital access.</p>
+                <a class="cmPremiumButton" href="https://myaccount.statesman.com/dssMatch.aspx?premium=y&product=desktop&icid=statesman_internallink_mystatesmaninvitationbox_feb2014_accessdigital&return=http://www.mystatesman.com/?icid=statesman_internallink_mystatesmaninvitationbox_jan2014_accessdigital_post-purchase">Access Digital</a>
+            </div>
+
+            <div class="cmPremiumDivider"></div>
+
+            <div class="cmPremiumOption cmPass clearfix">
+                <p class="description"><img src="http://media.cmgdigital.com/shared/img/photos/2013/09/20/65/03/UX_Projects-Medley-Janus-Janus-1890_Invitation_Box-icons-icons24hour.png" />Read MyStatesman.com now — 24-hour digital pass</p>
+                <a class="cmPremiumButton" href="https://myaccount.statesman.com/dsssubscribe.aspx?pid=1208,1224&premium=y&product=desktop&icid=statesman_internallink_mystatesmaninvitationbox_feb2014_99cdaypass&return=http://www.mystatesman.com/?icid=statesman_internallink_mystatesmaninvitationbox_feb2014_99cdaypass_post-purchase">99&#162; for 24-hours</a>
+            </div>
+
+            <div class="cmPremiumOption cmPass clearfix">
+                <p class="description"><img src="http://media.cmgdigital.com/shared/img/photos/2013/09/20/c9/db/UX_Projects-Medley-Janus-Janus-1890_Invitation_Box-icons-icons7day.png" />Read MyStatesman.com all week — 7-day digital pass</p>
+                <a class="cmPremiumButton" href="https://myaccount.statesman.com/dsssubscribe.aspx?pid=1255,1224&premium=y&product=desktop&icid=statesman_internallink_mystatesmaninvitationbox_feb2014_399weeklypass&return=http://www.mystatesman.com/?icid=statesman_internallink_mystatesmaninvitationbox_feb2014_399weeklypass_post-purchase">$3.99 for 7-days</a>
+            </div>
+
+            <div class="cmPremiumOption cmPass clearfix">
+                <p class="description"><img src="http://media.cmgdigital.com/shared/img/photos/2013/09/20/e3/44/UX_Projects-Medley-Janus-Janus-1890_Invitation_Box-icons-iconsBestValue.png" />Subscribe to the Statesman for as little as 33&#162; per day</p>
+                <a class="cmPremiumButton" href="https://myaccount.statesman.com/dsssubscribe.aspx?premium=y&product=desktop&icid=statesman_internallink_mystatesmaninvitationbox_feb2014_viewoffers&return=http://www.mystatesman.com/?icid=statesman_internallink_mystatesmaninvitationbox_feb2014_viewoffers_post-purchase">View Offers</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+</div></div></div><div class="premium-content">
+<script>
+  performance.mark('sectionsStart');
+  </script>
+<article class="story">
+<div class="sections-list">
+<div class="section section-header" id="header-4032">
+<div class="header-panel header-logo-panel">
+</div>
+<div class="header-panel header-social-panel">
+<ul class="header-social-list">
+<li>
+<div id="fb-root"></div>
+<script>
+            (function(d, s, id) {
+              var js, fjs = d.getElementsByTagName(s)[0];
+              if (d.getElementById(id)) return;
+              js = d.createElement(s); js.id = id;
+              js.src = "//connect.facebook.net/en_US/all.js#xfbml=1&appId=881505665256530";
+              fjs.parentNode.insertBefore(js, fjs);
+            }(document, 'script', 'facebook-jssdk'));
+          </script>
+<div class="fb-share-button" href="http://atxne.ws/1LVh16H" type="button_count" width="200"></div>
+</li>
+<li>
+<div class="twitter-button">
+<a class="header-twitter active twitter-share-button" data-counturl="http://projects.statesman.com/news/wimberley-flood-recovery/" data-lang="en" data-text="Wimberley's shops and resorts are slowly bouncing back from the Memorial Day weekend floods" data-url="http://atxne.ws/1LVh16H" data-via="statesman" href="https://twitter.com/share"></a>
+</div>
+<script>
+            !function(d,s,id){var js,fjs=d.getElementsByTagName(s)[0];if(!d.getElementById(id)){js=d.createElement(s);js.id=id;js.src="https://platform.twitter.com/widgets.js";fjs.parentNode.insertBefore(js,fjs);}}(document,"script","twitter-wjs");
+          </script>
+</li>
+</ul>
+</div>
+<div class="small-menu ">
+<a href="#">
+<i class="icon-menu"></i>
+</a>
+</div>
+</div>
+<script>
+  performance.mark('titleStart');
+</script>
+<style>
+    .section-title-4022 {
+      background-image: url(./media/slt_wimb_biz_12-resized-hr.jpg);
+    }
+
+    .lt-ie9 .section-title-4022 {
+      -ms-filter: "progid:DXImageTransform.Microsoft.AlphaImageLoader(src='./media/slt_wimb_biz_12-resized-hr.jpg', sizingMethod='scale')";
+    }
+
+    @media (max-width: 755px){
+      .section-title-4022 {
+        background-image: url(./media/slt_wimb_biz_12-resized-lr.jpg);
+      }
+    }
+    @media (min-width: 755px) and (max-width: 1400px) {
+      .section-title-4022 {
+        background-image: url(./media/slt_wimb_biz_12-resized-mr.jpg);
+      }
+    }
+    
+      @media (max-aspect-ratio: 1/1) {
+        .section-title-4022 {
+          background-image: url(./media/slt_wimb_biz_12-resizedvertical-hr.jpg);
+        }
+        @media (max-width: 755px){
+          .section-title-4022 {
+            background-image: url(./media/slt_wimb_biz_12-resizedvertical-lr.jpg);
+          }
+        }
+        @media (min-width: 755px) and (max-width: 1400px) {
+          .section-title-4022 {
+            background-image: url(./media/slt_wimb_biz_12-resizedvertical-mr.jpg);
+          }
+        }
+      }
+    
+  </style>
+<div class="section section-text-over-media section-title section-title-4022" data-viewport-height="" id="title-4022">
+<div class="text title-inner right top">
+<h1 class="story-title text-inner small">Keeping the<br/>doors open</h1>
+<h2 class="story-heading text-inner xx-small">Wimberley's shops and resorts are slowly bouncing back<br/>from the Memorial Day weekend floods</h2>
+</div>
+<div class="story-metadata left text">Story by <a href="mailto:scwalsh@statesman.com">Sean Collins Walsh</a><br/>Title photo by <a href="mailto:stauber@statesman.com">Shelby Tauber</a><br/>Videos by <a href="mailto:kwest@statesman.com">Kelly West</a><br/>Presentation by <a href="mailto:pharkins@statesman.com">Paighten Harkins</a></div>
+<div class="background-overlay">
+</div>
+</div>
+<script>
+  //IE9 fix to stop audio playing
+  var video = document.getElementById('video-title-4022')
+    if (video){
+      video.muted = true;
+    }
+  ViewportHeight.attachTo(document.getElementById('title-4022'));
+  if ('performance' in window) {
+    window.performance.mark('titleEnd');
+  }
+</script>
+<div class="section section-text inner-column-centered " id="text-2318">
+<div class="main-column">
+<div class="block text-block"><p>John McNeal has been coming to the 7A Resort in Wimberley for eight years. In recent summers, he began telling his girlfriend that he wanted to do something more than float on the Blanco River and sip beers during their annual Hill Country pilgrimage.  </p>
+<p>“I pestered her for years — ‘I’m going to marry you in that river’ — and lo and behold, I asked the JP and he said, ‘Yeah, no problem,’ ” said McNeal, 43, who lives in Channelview, near Houston. “We were married right at the point of that rock last year.”  </p>
+<p>A year later, they returned to find their paradise a war zone, with skinned and uprooted Cypress trees lining banks of the river, collapsed houses dotting River Road and cleanup crews outnumbering vacationers.  </p>
+<p>“It was a little heartbreaking, really, and then coming down the road and knowing that we’ve seen this here and that there — and it’s just gone,” McNeal said. “My wife just couldn’t take it anymore. She just started crying when we were checking in.”  </p>
+<p>Neal was one of the few 7A loyalists who were able to return this summer. The resort lost 15 of its 20 cabins and its pool, said Carroll Czichos, a co-owner of the resort and Wimberley’s fire chief. The property did not have flood insurance, and rebuilding could cost $300,000 at a time when they are still returning deposits to vacationers whose reservations they had to cancel, he said.  </p></div><figure class="block quote-block">
+<blockquote>
+<p>“My wife just couldn’t take it anymore. She just started crying when we were checking in.”  </p>
+</blockquote>
+<figcaption class="quote-cite">John McNeal, 7A Resort regular</figcaption>
+</figure><div class="block text-block"><p>As the Hill Country tourist town begins to bounce back from the Memorial Day weekend floods, business in Wimberley has picked up considerably since the immediate aftermath of the disaster, officials and shopkeepers said. But traffic is still well below what it usually is during the summer, and many believe it’s because 7A and Rio Benito, the other big resort in town, are still recovering from the damage.  </p>
+<p>“There were thousands of people planning to come in Wimberley and stay in those larger places, and they’re either trying to find other places or just canceled their reservations altogether. That has had an effect,” said Cathy Moreman, executive director of the Wimberley Chamber of Commerce.  </p>
+<p>Data on sales-tax revenue from this summer are not yet available, City Administrator Don Ferguson said. But anecdotal evidence suggests that <a href="http://www.statesman.com/news/news/local/wimberley-were-open-for-business/nmYdD/">June was devastatingly slow</a> for many businesses, but picked up some in July. Restaurants have been doing better than retailers.  </p>
+<p>The flooding <a href="http://projects.statesman.com/news/flood-missing/">killed 12 people</a> in Central Texas, and two are still missing. It took out all but one bridge in the Wimberley area and damaged 400 homes. But the destruction was limited to the banks of the Blanco River, and the main shopping area along Cypress Creek suffered almost no damage.  </p>
+<p>Despite an advertising campaign by her group and a <a href="http://www.statesman.com/news/news/state-regional/in-wimberley-abbott-praises-resilience-of-city-ope/nmXgP/">promotional visit</a> from Gov. Greg Abbott, Moreman said Wimberley is still fighting the perception that the flood wiped the town off the map.  </p>
+<p>“Many people still think that Wimberley was, if not completely washed away, at least damaged to the point where it’s not worth visiting. But of course that’s not true,” she said.  </p></div>
+</div>
+</div>
+<script>
+  //IE9 fix to stop audio playing
+  var video = document.getElementById('video-text-2318')
+    if (video){
+      video.muted = true;
+    }
+</script><style>
+  
+    .section-text-over-media-10182 {
+      background-image: url(./media/klw_wimberley_08-resized-hr.jpg);
+    }
+
+    .lt-ie9 .section-text-over-media-10182 {
+      -ms-filter: "progid:DXImageTransform.Microsoft.AlphaImageLoader(src='./media/klw_wimberley_08-resized-hr.jpg', sizingMethod='scale')";
+    }
+
+    @media (max-width: 755px){
+      .section-text-over-media-10182 {
+        background-image: url(./media/klw_wimberley_08-resized-lr.jpg);
+      }
+    }
+    @media (min-width: 755px) and (max-width: 1400px) {
+      .section-text-over-media-10182 {
+        background-image: url(./media/klw_wimberley_08-resized-mr.jpg);
+      }
+    }
+    
+      @media (max-aspect-ratio: 1/1) {
+        .section-text-over-media-10182 {
+          background-image: url(./media/klw_wimberley_08-resizedvertical-hr.jpg);
+        }
+        @media (max-width: 755px){
+          .section-text-over-media-10182 {
+            background-image: url(./media/klw_wimberley_08-resizedvertical-lr.jpg);
+          }
+        }
+        @media (min-width: 755px) and (max-width: 1400px) {
+          .section-text-over-media-10182 {
+            background-image: url(./media/klw_wimberley_08-resizedvertical-mr.jpg);
+          }
+        }
+      }
+    
+  
+</style>
+<div class="section section-text-over-media section-text-over-image section-text-over-media-10182 " data-viewport-height="" id="text-over-media-10182">
+<div class="text text-over-media-inner center center normal">
+<div class="text-inner">
+</div>
+</div>
+<div class="background-overlay">
+</div>
+<p class="caption text-over-media-caption main-text-is-center">Two months after devastating flood waters rose more than 40 feet, the Blanco River looks calm, clean and inviting to guests of the 7A Resort in Wimberley. The flood uprooted Cypress trees that were hundreds of years old and stripped away the undergrowth in the river. “It’s almost taken the river banks to bare bones,” said Trish Czichos, co-owner of the resort.   (Kelly West/American-Statesman)</p>
+<img alt="Two months after devastating flood waters rose more than 40 feet, the Blanco River looks calm, clean and inviting to guests of the 7A Resort in Wimberley. The flood uprooted Cypress trees that were hundreds of years old and stripped away the undergrowth in the river. “It’s almost taken the river banks to bare bones,” said Trish Czichos, co-owner of the resort.   (Kelly West/American-Statesman)" class="section-background-image text-over-media-background-image retina-only" data-autoscale="cover" data-landscape-src="./media/klw_wimberley_08-resized-hr.jpg" data-portrait-src="./media/klw_wimberley_08-resizedvertical-hr.jpg"/>
+</div>
+<script>
+(function() {
+  //IE9 fix to stop audio playing
+  var video = document.getElementById('video-text-over-media-10182');
+  if (video){
+    video.muted = true;
+  }
+  var section = document.getElementById('text-over-media-10182');
+
+  // Chrome on MacBook Retina
+  if (Device.isMacRetinaChrome()) {
+    var backgroundImage = document.querySelector('#text-over-media-10182 .section-background-image');
+    var srcProperty = 'landscapeSrc';
+
+    if (Shorthand.helpers.isPortrait() && backgroundImage.dataset.portraitSrc.length) {
+      srcProperty = 'portraitSrc';
+    }
+
+    backgroundImage.src = backgroundImage.dataset[srcProperty];
+    backgroundImage.style.display = 'block';
+    section.style.backgroundImage = 'none';
+  }
+
+  ViewportHeight.attachTo(section);
+}());
+</script>
+<div class="section section-html" id="custom-html-1688">
+<!-- You can use this Custom HTML section to put in your own HTML or javascript. -->
+<!-- If you would like to define CSS it is best to put it in the CUSTOM CSS panel on the left -->
+<h3 class="text-center"><style>.embed-container { position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%; } .embed-container iframe, .embed-container object, .embed-container embed { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }</style><div class="embed-container"><!-- Start of Brightcove Player --> <div style="display:none"> JANUS-1086 chromeless player template  </div> <!-- By use of this code snippet, I agree to the Brightcove Publisher T and C  found at https://accounts.brightcove.com/en/terms-and-conditions/.  --> <script language="JavaScript" src="http://admin.brightcove.com/js/BrightcoveExperiences.js" type="text/javascript"></script> <object class="BrightcoveExperience" id="myExperience4388340538001"> <param name="bgcolor" value="#FFFFFF"></param> <param name="width" value="750"></param> <param name="height" value="422"></param> <param name="playerID" value="2305729465001"></param> <param name="playerKey" value="AQ~~,AAAAAFSNjfU~,4oPitrNpKqxve-TuA7jvGHefnd3bNl1A"></param> <param name="isVid" value="true"></param> <param name="isUI" value="true"></param> <param name="dynamicStreaming" value="true"></param> <param name="@videoPlayer" value="4388340538001"></param> </object> <!--  This script tag will cause the Brightcove Players defined above it to be created as soon as the line is read by the browser. If you wish to have the player instantiated only after the rest of the HTML is processed and the page load is complete, remove the line. --> <script type="text/javascript">brightcove.createExperiences();</script> <!-- End of Brightcove Player --></div></h3>
+</div><style>
+  
+    .section-text-over-media-10162 {
+      background-image: url(./media/slt_wimb_biz_10-resized-hr.jpg);
+    }
+
+    .lt-ie9 .section-text-over-media-10162 {
+      -ms-filter: "progid:DXImageTransform.Microsoft.AlphaImageLoader(src='./media/slt_wimb_biz_10-resized-hr.jpg', sizingMethod='scale')";
+    }
+
+    @media (max-width: 755px){
+      .section-text-over-media-10162 {
+        background-image: url(./media/slt_wimb_biz_10-resized-lr.jpg);
+      }
+    }
+    @media (min-width: 755px) and (max-width: 1400px) {
+      .section-text-over-media-10162 {
+        background-image: url(./media/slt_wimb_biz_10-resized-mr.jpg);
+      }
+    }
+    
+      @media (max-aspect-ratio: 1/1) {
+        .section-text-over-media-10162 {
+          background-image: url(./media/slt_wimb_biz_10-resizedvertical-hr.jpg);
+        }
+        @media (max-width: 755px){
+          .section-text-over-media-10162 {
+            background-image: url(./media/slt_wimb_biz_10-resizedvertical-lr.jpg);
+          }
+        }
+        @media (min-width: 755px) and (max-width: 1400px) {
+          .section-text-over-media-10162 {
+            background-image: url(./media/slt_wimb_biz_10-resizedvertical-mr.jpg);
+          }
+        }
+      }
+    
+  
+</style>
+<div class="section section-text-over-media section-text-over-image section-text-over-media-10162 has-text" data-viewport-height="" id="text-over-media-10162">
+<div class="text text-over-media-inner right top normal">
+<div class="text-inner">
+<strong>Keeping</strong><br/><strong>afloat</strong>
+</div>
+</div>
+<div class="background-overlay">
+</div>
+<p class="caption text-over-media-caption main-text-is-top">Two women chat at the Wimberley Cafe on July 29.  Many Wimberley businesses are struggling to stay busy because of a lack of tourists after the Memorial Day floods. (Shelby Tauber/American-Statesman)</p>
+<img alt="Two women chat at the Wimberley Cafe on July 29.  Many Wimberley businesses are struggling to stay busy because of a lack of tourists after the Memorial Day floods. (Shelby Tauber/American-Statesman)" class="section-background-image text-over-media-background-image retina-only" data-autoscale="cover" data-landscape-src="./media/slt_wimb_biz_10-resized-hr.jpg" data-portrait-src="./media/slt_wimb_biz_10-resizedvertical-hr.jpg"/>
+</div>
+<script>
+(function() {
+  //IE9 fix to stop audio playing
+  var video = document.getElementById('video-text-over-media-10162');
+  if (video){
+    video.muted = true;
+  }
+  var section = document.getElementById('text-over-media-10162');
+
+  // Chrome on MacBook Retina
+  if (Device.isMacRetinaChrome()) {
+    var backgroundImage = document.querySelector('#text-over-media-10162 .section-background-image');
+    var srcProperty = 'landscapeSrc';
+
+    if (Shorthand.helpers.isPortrait() && backgroundImage.dataset.portraitSrc.length) {
+      srcProperty = 'portraitSrc';
+    }
+
+    backgroundImage.src = backgroundImage.dataset[srcProperty];
+    backgroundImage.style.display = 'block';
+    section.style.backgroundImage = 'none';
+  }
+
+  ViewportHeight.attachTo(section);
+}());
+</script>
+<div class="section section-scrollmation scrollmation-two-column section-two-column-4874" data-possible-scrollmation="" data-scrollmation-container="#scrollmation-two-column-4874" data-viewport-height="" data-viewport-height-property="min-height" id="scrollmation-two-column-4874">
+<div class="two-column-grid">
+<div class="column column-right main-column scrollmation-text">
+<div class="block text-block"><p>At lunchtime Wednesday, restaurants in Wimberley Square were almost full, but many of the quirky shops and boutiques that Wimberley is famous for were almost empty.  </p><aside class="scrollmation-inline " data-copy-element="" data-media-ratio="1.49892933619" data-resize-element=".scrollmation-two-column .secondary-column" data-scrollmation-slide="">
+<img alt="The staff at Cedar Chest created a Wimberley Strong Pandora Charm to raise money for the flood victims and community affected by the Memorial Day floods. Selling the charms raised $8,000 to aid the community. (Shelby Tauber/American-Statesman)" class="inline-image edit-image-button" data-min-width-1401="./media/slt_wimb_biz_11-resized-mr_8jhwgsb.jpg" src="./media/slt_wimb_biz_11-resized-lr_wgsqtgn.jpg"/>
+<p class="caption">The staff at Cedar Chest created a Wimberley Strong Pandora Charm to raise money for the flood victims and community affected by the Memorial Day floods. Selling the charms raised $8,000 to aid the community. (Shelby Tauber/American-Statesman)</p>
+</aside>
+<p>At the eclectic Old Mill Store, where Abbott shopped this summer to spread the word that Wimberley is open for business, assistant manager Amy Jordan fixed a turkey sandwich for a customer and looked out at the otherwise empty store.  </p>
+<p>“Abbott was here. That might’ve helped some, I’d like to think. But not too much,” Jordan, 60, said. “Summers past, it’s just been crazy in here.”  </p>
+<p>At Cedar Chest, which sells jewelry and women’s wear, the steady stream of customers belied the struggles facing Sarah Barlow, the owner. She pointed to racks of clothes from the spring season that she is discounting for 50 percent to make room for the fall inventory.  </p></div><figure class="block quote-block">
+<blockquote>
+<p>“Summers past, it’s just been crazy in here.”  </p>
+</blockquote>
+<figcaption class="quote-cite">Amy Jordan, Old Mill Store assistant manager</figcaption>
+</figure><aside class="scrollmation-inline " data-copy-element="" data-media-ratio="1.49892933619" data-resize-element=".scrollmation-two-column .secondary-column" data-scrollmation-slide="">
+<img alt="Makaela Goss, 7, pets a cat at Wall Street Western in Wimberley on July 29. The five cats at the store can be photographed for $5, which is donated to flood relief in the city. (Shelby Tauber/American-Statesman)" class="inline-image edit-image-button" data-min-width-1401="./media/slt_wimb_biz_13-resized-mr_42qjwaa.jpg" src="./media/slt_wimb_biz_13-resized-lr_9iyihrz.jpg"/>
+<p class="caption">Makaela Goss, 7, pets a cat at Wall Street Western in Wimberley on July 29. The five cats at the store can be photographed for $5, which is donated to flood relief in the city. (Shelby Tauber/American-Statesman)</p>
+</aside>
+<div class="block text-block"><p>“We lost our spring this year. We have to keep up with the seasons in retail,” Barlow said. The business is operating under a “caution flag,” she said, meaning it won’t bring in new inventory until it unloads the stuff it has.  </p>
+<p>One item she has had no problem selling is a $55 Pandora bracelet charm with the shape of Texas and “Wimberley Strong” engraved on it. Barlow is sending the profits to 7A and Rio Benito, a decision that drew criticism from some who thought aid should go to displaced homeowners rather than businesses, she said.  </p>
+<p>But Barlow has her reasons: If the resorts suffer, the shops suffer. And if the shops suffer, the city government — which has no property or hotel tax and relies on a 1 percent sales tax — also suffers.  </p>
+<p>“Business helps support this economy,” she said. “If people don’t shop here, we will need money to run the city.”  </p></div>
+</div>
+<div class="column margin-right secondary-column position-static">
+<div class="scrollmation-slides" data-copy-elements=".section-two-column-4874 [data-copy-element]" data-scrollmation-slides="">
+</div>
+</div>
+</div>
+</div><style>
+  
+    .section-text-over-media-10163 {
+      background-image: url(./media/slt_wimb_biz_01-resized-hr.jpg);
+    }
+
+    .lt-ie9 .section-text-over-media-10163 {
+      -ms-filter: "progid:DXImageTransform.Microsoft.AlphaImageLoader(src='./media/slt_wimb_biz_01-resized-hr.jpg', sizingMethod='scale')";
+    }
+
+    @media (max-width: 755px){
+      .section-text-over-media-10163 {
+        background-image: url(./media/slt_wimb_biz_01-resized-lr.jpg);
+      }
+    }
+    @media (min-width: 755px) and (max-width: 1400px) {
+      .section-text-over-media-10163 {
+        background-image: url(./media/slt_wimb_biz_01-resized-mr.jpg);
+      }
+    }
+    
+      @media (max-aspect-ratio: 1/1) {
+        .section-text-over-media-10163 {
+          background-image: url(./media/slt_wimb_biz_01-resizedvertical-hr.jpg);
+        }
+        @media (max-width: 755px){
+          .section-text-over-media-10163 {
+            background-image: url(./media/slt_wimb_biz_01-resizedvertical-lr.jpg);
+          }
+        }
+        @media (min-width: 755px) and (max-width: 1400px) {
+          .section-text-over-media-10163 {
+            background-image: url(./media/slt_wimb_biz_01-resizedvertical-mr.jpg);
+          }
+        }
+      }
+    
+  
+</style>
+<div class="section section-text-over-media section-text-over-image section-text-over-media-10163 has-text" data-viewport-height="" id="text-over-media-10163">
+<div class="text text-over-media-inner left top normal">
+<div class="text-inner">
+<strong>Looking to</strong><br/><strong>rebuild</strong>
+</div>
+</div>
+<div class="background-overlay">
+</div>
+<p class="caption text-over-media-caption main-text-is-top">Trish Czichos, co-owner of 7A Resort and manager of Pioneer Town in Wimberley, on July 29.  The resort was hit hard by the Memorial Day weekend floods.  (Shelby Tauber/American-Statesman)</p>
+<img alt="Trish Czichos, co-owner of 7A Resort and manager of Pioneer Town in Wimberley, on July 29.  The resort was hit hard by the Memorial Day weekend floods.  (Shelby Tauber/American-Statesman)" class="section-background-image text-over-media-background-image retina-only" data-autoscale="cover" data-landscape-src="./media/slt_wimb_biz_01-resized-hr.jpg" data-portrait-src="./media/slt_wimb_biz_01-resizedvertical-hr.jpg"/>
+</div>
+<script>
+(function() {
+  //IE9 fix to stop audio playing
+  var video = document.getElementById('video-text-over-media-10163');
+  if (video){
+    video.muted = true;
+  }
+  var section = document.getElementById('text-over-media-10163');
+
+  // Chrome on MacBook Retina
+  if (Device.isMacRetinaChrome()) {
+    var backgroundImage = document.querySelector('#text-over-media-10163 .section-background-image');
+    var srcProperty = 'landscapeSrc';
+
+    if (Shorthand.helpers.isPortrait() && backgroundImage.dataset.portraitSrc.length) {
+      srcProperty = 'portraitSrc';
+    }
+
+    backgroundImage.src = backgroundImage.dataset[srcProperty];
+    backgroundImage.style.display = 'block';
+    section.style.backgroundImage = 'none';
+  }
+
+  ViewportHeight.attachTo(section);
+}());
+</script>
+<div class="section section-scrollmation scrollmation-two-column section-two-column-4875" data-possible-scrollmation="" data-scrollmation-container="#scrollmation-two-column-4875" data-viewport-height="" data-viewport-height-property="min-height" id="scrollmation-two-column-4875">
+<div class="two-column-grid">
+<div class="column column-left main-column scrollmation-text">
+<div class="block text-block"><p>The Czichos family in 1946 began renting cabins on the Blanco River on a 7.45-acre plot, which is why the 115-acre operation is now called “7A.” Several years later, they opened Pioneer Town.  </p><aside class="scrollmation-inline " data-copy-element="" data-media-ratio="1.49892933619" data-resize-element=".scrollmation-two-column .secondary-column" data-scrollmation-slide="">
+<img alt="The base of a cabin in the 7A Resort sits near the Blanco River. Many of the cabins were swept away or severely damaged by the Memorial Day floods. (Shelby Tauber/American-Statesman)" class="inline-image edit-image-button" data-min-width-1401="./media/slt_wimb_biz_07-resized-mr_z36xfkt.jpg" src="./media/slt_wimb_biz_07-resized-lr_3sdeabs.jpg"/>
+<p class="caption">The base of a cabin in the 7A Resort sits near the Blanco River. Many of the cabins were swept away or severely damaged by the Memorial Day floods. (Shelby Tauber/American-Statesman)</p>
+</aside>
+<p>One summer, a “strutter” performing in a dance routine at a Pioneer Town show caught the eye of Raymond Czichos, the founder’s son. They married, and now Trish Czichos is the manager of the Pioneer Town.  </p>
+<p>During the Memorial Day weekend floods, Pioneer Town became a refugee camp of sorts for the 200 vacationers staying at the resort. The water swept away four cabins and damaged almost all of them.  </p>
+<p>“Basically our biggest blessing is that we got everyone out,” she said.  </p>
+<p>Some of 7A’s cabins were in the federally designated floodplain where property owners must get flood insurance. But they were built decades before the insurance program was instituted and were grandfathered in. The family didn’t opt to get insurance anyway, Carroll Czichos said, because flood waters had never reached as high as they did over Memorial Day weekend.  </p><aside class="scrollmation-inline " data-copy-element="" data-media-ratio="1.49892933619" data-resize-element=".scrollmation-two-column .secondary-column" data-scrollmation-slide="">
+<img alt="Lux Toomey, 5, has her hair braided by her aunt, Nicole Toomey, at the 7A Resort in Wimberley on July 29. Nicole originally rented out Cabin 8 in August, but the Memorial Day floods swept away the building. (Shelby Tauber/American-Statesman)" class="inline-image edit-image-button" data-min-width-1401="./media/slt_wimb_biz_03-resized-mr_6seclzt.jpg" src="./media/slt_wimb_biz_03-resized-lr_dvy3ao1.jpg"/>
+<p class="caption">Lux Toomey, 5, has her hair braided by her aunt, Nicole Toomey, at the 7A Resort in Wimberley on July 29. Nicole originally rented out Cabin 8 in August, but the Memorial Day floods swept away the building. (Shelby Tauber/American-Statesman)</p>
+</aside>
+</div><figure class="block quote-block">
+<blockquote>
+<p>“Basically our biggest blessing is that we got everyone out.”  </p>
+</blockquote>
+<figcaption class="quote-cite">Trish Czichos, 7A Resort co-owner</figcaption>
+</figure><div class="block text-block"><p>The family is exploring options on how to rebuild and is requesting permission from the city to build an RV park.  </p>
+<p>Trish Czichos said she believes the resort will recover, although it won’t be exactly the same. It’s the same way she feels about Wimberley when she drives by the vanished homes of people she knows.  </p>
+<p>“It’s almost as if you see all the blank areas and you go, ‘Were they really there? There’s a kind of disbelief that that could have happened and that could have been so powerful,” she said. “There’s a sadness.”  </p></div>
+</div>
+<div class="column margin-left secondary-column position-static">
+<div class="scrollmation-slides" data-copy-elements=".section-two-column-4875 [data-copy-element]" data-scrollmation-slides="">
+</div>
+</div>
+</div>
+</div><style>
+  
+    .section-text-over-media-10159 {
+      background-image: url(./media/slt_wimb_biz_04-resized-hr.jpg);
+    }
+
+    .lt-ie9 .section-text-over-media-10159 {
+      -ms-filter: "progid:DXImageTransform.Microsoft.AlphaImageLoader(src='./media/slt_wimb_biz_04-resized-hr.jpg', sizingMethod='scale')";
+    }
+
+    @media (max-width: 755px){
+      .section-text-over-media-10159 {
+        background-image: url(./media/slt_wimb_biz_04-resized-lr.jpg);
+      }
+    }
+    @media (min-width: 755px) and (max-width: 1400px) {
+      .section-text-over-media-10159 {
+        background-image: url(./media/slt_wimb_biz_04-resized-mr.jpg);
+      }
+    }
+    
+      @media (max-aspect-ratio: 1/1) {
+        .section-text-over-media-10159 {
+          background-image: url(./media/slt_wimb_biz_04-resizedvertical-hr.jpg);
+        }
+        @media (max-width: 755px){
+          .section-text-over-media-10159 {
+            background-image: url(./media/slt_wimb_biz_04-resizedvertical-lr.jpg);
+          }
+        }
+        @media (min-width: 755px) and (max-width: 1400px) {
+          .section-text-over-media-10159 {
+            background-image: url(./media/slt_wimb_biz_04-resizedvertical-mr.jpg);
+          }
+        }
+      }
+    
+  
+</style>
+<div class="section section-text-over-media section-text-over-image section-text-over-media-10159 " data-viewport-height="" id="text-over-media-10159">
+<div class="text text-over-media-inner center center normal">
+<div class="text-inner">
+</div>
+</div>
+<div class="background-overlay">
+</div>
+<p class="caption text-over-media-caption main-text-is-center">The damage is clear on the banks of the Blanco River from the Memorial Day floods at the 7A Resort.  (Shelby Tauber/American-Statesman)</p>
+<img alt="The damage is clear on the banks of the Blanco River from the Memorial Day floods at the 7A Resort.  (Shelby Tauber/American-Statesman)" class="section-background-image text-over-media-background-image retina-only" data-autoscale="cover" data-landscape-src="./media/slt_wimb_biz_04-resized-hr.jpg" data-portrait-src="./media/slt_wimb_biz_04-resizedvertical-hr.jpg"/>
+</div>
+<script>
+(function() {
+  //IE9 fix to stop audio playing
+  var video = document.getElementById('video-text-over-media-10159');
+  if (video){
+    video.muted = true;
+  }
+  var section = document.getElementById('text-over-media-10159');
+
+  // Chrome on MacBook Retina
+  if (Device.isMacRetinaChrome()) {
+    var backgroundImage = document.querySelector('#text-over-media-10159 .section-background-image');
+    var srcProperty = 'landscapeSrc';
+
+    if (Shorthand.helpers.isPortrait() && backgroundImage.dataset.portraitSrc.length) {
+      srcProperty = 'portraitSrc';
+    }
+
+    backgroundImage.src = backgroundImage.dataset[srcProperty];
+    backgroundImage.style.display = 'block';
+    section.style.backgroundImage = 'none';
+  }
+
+  ViewportHeight.attachTo(section);
+}());
+</script>
+<style>
+  
+    .section-text-over-media-10180 {
+      background-image: url(./media/rgz_blanco_river_flood_03a-resized-hr.jpg);
+    }
+
+    .lt-ie9 .section-text-over-media-10180 {
+      -ms-filter: "progid:DXImageTransform.Microsoft.AlphaImageLoader(src='./media/rgz_blanco_river_flood_03a-resized-hr.jpg', sizingMethod='scale')";
+    }
+
+    @media (max-width: 755px){
+      .section-text-over-media-10180 {
+        background-image: url(./media/rgz_blanco_river_flood_03a-resized-lr.jpg);
+      }
+    }
+    @media (min-width: 755px) and (max-width: 1400px) {
+      .section-text-over-media-10180 {
+        background-image: url(./media/rgz_blanco_river_flood_03a-resized-mr.jpg);
+      }
+    }
+    
+      @media (max-aspect-ratio: 1/1) {
+        .section-text-over-media-10180 {
+          background-image: url(./media/rgz_blanco_river_flood_03a-resizedvertical-hr.jpg);
+        }
+        @media (max-width: 755px){
+          .section-text-over-media-10180 {
+            background-image: url(./media/rgz_blanco_river_flood_03a-resizedvertical-lr.jpg);
+          }
+        }
+        @media (min-width: 755px) and (max-width: 1400px) {
+          .section-text-over-media-10180 {
+            background-image: url(./media/rgz_blanco_river_flood_03a-resizedvertical-mr.jpg);
+          }
+        }
+      }
+    
+  
+</style>
+<div class="section section-text-over-media section-text-over-image section-text-over-media-10180 has-text" data-viewport-height="" id="text-over-media-10180">
+<div class="text text-over-media-inner right top large">
+<div class="text-inner">
+<strong>The floods</strong>
+</div>
+</div>
+<div class="background-overlay">
+</div>
+<p class="caption text-over-media-caption main-text-is-top">A youth looks into Blanco River floodwaters in Wimberley. Overnight, the waters ripped the home behind him from its foundation. (Rodolfo Gonzalez/American-Statesman)</p>
+<img alt="A youth looks into Blanco River floodwaters in Wimberley. Overnight, the waters ripped the home behind him from its foundation. (Rodolfo Gonzalez/American-Statesman)" class="section-background-image text-over-media-background-image retina-only" data-autoscale="cover" data-landscape-src="./media/rgz_blanco_river_flood_03a-resized-hr.jpg" data-portrait-src="./media/rgz_blanco_river_flood_03a-resizedvertical-hr.jpg"/>
+</div>
+<script>
+(function() {
+  //IE9 fix to stop audio playing
+  var video = document.getElementById('video-text-over-media-10180');
+  if (video){
+    video.muted = true;
+  }
+  var section = document.getElementById('text-over-media-10180');
+
+  // Chrome on MacBook Retina
+  if (Device.isMacRetinaChrome()) {
+    var backgroundImage = document.querySelector('#text-over-media-10180 .section-background-image');
+    var srcProperty = 'landscapeSrc';
+
+    if (Shorthand.helpers.isPortrait() && backgroundImage.dataset.portraitSrc.length) {
+      srcProperty = 'portraitSrc';
+    }
+
+    backgroundImage.src = backgroundImage.dataset[srcProperty];
+    backgroundImage.style.display = 'block';
+    section.style.backgroundImage = 'none';
+  }
+
+  ViewportHeight.attachTo(section);
+}());
+</script>
+<div class="section section-scrollmation scrollmation-two-column section-two-column-4882" data-possible-scrollmation="" data-scrollmation-container="#scrollmation-two-column-4882" data-viewport-height="" data-viewport-height-property="min-height" id="scrollmation-two-column-4882">
+<div class="two-column-grid">
+<div class="column column-left main-column scrollmation-text">
+<div class="block text-block"><p>The Memorial Day weekend floods ravaged Wimberley and the surrounding areas, killing at least 12 people and doing millions of dollars of damage to Central Texas. An <a href="http://www.mystatesman.com/news/news/local/memorial-weekend-storms-took-costly-toll-on-public/nmcLf/?icmp=statesman_internallink_invitationbox_apr2013_statesmanstubtomystatesmanpremium#d9aa7a64.3989585.735810">early estimate</a> totaled $33 million in Hays County, home to hard hit areas like Wimberley and San Marcos, alone.  </p><aside class="scrollmation-inline " data-copy-element="" data-media-ratio="1.77222222222" data-resize-element=".scrollmation-two-column .secondary-column" data-scrollmation-slide="">
+<img alt="Matthew Latham, 11, of Wimberley, explores the destruction along the Blanco River in Wimberley on May 25. (Rodolfo Gonzalez/American-Statesman)" class="inline-image edit-image-button" data-min-width-1401="./media/rgz_cleanup_3-resized-mr_3f3bbin.jpg" src="./media/rgz_cleanup_3-resized-lr_2qvsoup.jpg"/>
+<p class="caption">Matthew Latham, 11, of Wimberley, explores the destruction along the Blanco River in Wimberley on May 25. (Rodolfo Gonzalez/American-Statesman)</p>
+</aside>
+</div><div class="block html-block"><!-- You can use this Custom HTML block to put in your own HTML -->
+<!-- CSS should go in the CUSTOM CSS panel on the left -->
+<h3 class="text-center"><style>.embed-container { position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%; } .embed-container iframe, .embed-container object, .embed-container embed { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }</style><div class="embed-container"><!-- Start of Brightcove Player --> <div style="display:none"> JANUS-1086 chromeless player template  </div> <!-- By use of this code snippet, I agree to the Brightcove Publisher T and C  found at https://accounts.brightcove.com/en/terms-and-conditions/.  --> <script language="JavaScript" src="http://admin.brightcove.com/js/BrightcoveExperiences.js" type="text/javascript"></script> <object class="BrightcoveExperience" id="myExperience4254125207001"> <param name="bgcolor" value="#FFFFFF"></param> <param name="width" value="750"></param> <param name="height" value="422"></param> <param name="playerID" value="2305729465001"></param> <param name="playerKey" value="AQ~~,AAAAAFSNjfU~,4oPitrNpKqxve-TuA7jvGHefnd3bNl1A"></param> <param name="isVid" value="true"></param> <param name="isUI" value="true"></param> <param name="dynamicStreaming" value="true"></param> <param name="@videoPlayer" value="4254125207001"></param> </object> <!--  This script tag will cause the Brightcove Players defined above it to be created as soon as the line is read by the browser. If you wish to have the player instantiated only after the rest of the HTML is processed and the page load is complete, remove the line. --> <script type="text/javascript">brightcove.createExperiences();</script> <!-- End of Brightcove Player --></div></h3></div><div class="block text-block"><p>Take a look back at the floods and their aftermath with these related links:<br/>
+• <a href="http://projects.statesman.com/news/blanco-river-flooding/">Interactive: Blanco River runs roughshod</a><br/>
+• <a href="http://projects.statesman.com/news/flood-missing/">Central Texas flooding dead and missing</a><br/>
+• <a href="http://www.mystatesman.com/news/news/local/memorial-weekend-storms-took-costly-toll-on-public/nmcLf/?icmp=statesman_internallink_invitationbox_apr2013_statesmanstubtomystatesmanpremium#d9aa7a64.3989585.735810">Memorial weekend storms took costly toll on public, private property</a><br/>
+• <a href="http://www.statesman.com/news/news/local/daylong-flood-aid-tx-benefit-concert-raises-money-/nmnT6/">Daylong Flood Aid TX benefit concert raises money for flood victims</a><br/>
+• <a href="http://www.statesman.com/gallery/weather/central-texas-storms-052315/gCSyy/">Gallery: Central Texas storms and flooding</a> </p></div>
+</div>
+<div class="column margin-left secondary-column position-static">
+<div class="scrollmation-slides" data-copy-elements=".section-two-column-4882 [data-copy-element]" data-scrollmation-slides="">
+</div>
+</div>
+</div>
+</div><style>
+  
+    .section-text-over-media-10164 {
+      background-image: url(./media/slt_wimb_biz_05-resized-hr.jpg);
+    }
+
+    .lt-ie9 .section-text-over-media-10164 {
+      -ms-filter: "progid:DXImageTransform.Microsoft.AlphaImageLoader(src='./media/slt_wimb_biz_05-resized-hr.jpg', sizingMethod='scale')";
+    }
+
+    @media (max-width: 755px){
+      .section-text-over-media-10164 {
+        background-image: url(./media/slt_wimb_biz_05-resized-lr.jpg);
+      }
+    }
+    @media (min-width: 755px) and (max-width: 1400px) {
+      .section-text-over-media-10164 {
+        background-image: url(./media/slt_wimb_biz_05-resized-mr.jpg);
+      }
+    }
+    
+      @media (max-aspect-ratio: 1/1) {
+        .section-text-over-media-10164 {
+          background-image: url(./media/slt_wimb_biz_05-resizedvertical-hr.jpg);
+        }
+        @media (max-width: 755px){
+          .section-text-over-media-10164 {
+            background-image: url(./media/slt_wimb_biz_05-resizedvertical-lr.jpg);
+          }
+        }
+        @media (min-width: 755px) and (max-width: 1400px) {
+          .section-text-over-media-10164 {
+            background-image: url(./media/slt_wimb_biz_05-resizedvertical-mr.jpg);
+          }
+        }
+      }
+    
+  
+</style>
+<div class="section section-text-over-media section-text-over-image section-text-over-media-10164 " data-viewport-height="" id="text-over-media-10164">
+<div class="text text-over-media-inner center center normal">
+<div class="text-inner">
+</div>
+</div>
+<div class="background-overlay">
+</div>
+<p class="caption text-over-media-caption main-text-is-center">Ryder Collins, 12, picks up a bottle while his family prepares lunch underneath a tree on July 29. The tree was damaged by the Memorial Day weekend floods. (Shelby Tauber/American-Statesman)</p>
+<img alt="Ryder Collins, 12, picks up a bottle while his family prepares lunch underneath a tree on July 29. The tree was damaged by the Memorial Day weekend floods. (Shelby Tauber/American-Statesman)" class="section-background-image text-over-media-background-image retina-only" data-autoscale="cover" data-landscape-src="./media/slt_wimb_biz_05-resized-hr.jpg" data-portrait-src="./media/slt_wimb_biz_05-resizedvertical-hr.jpg"/>
+</div>
+<script>
+(function() {
+  //IE9 fix to stop audio playing
+  var video = document.getElementById('video-text-over-media-10164');
+  if (video){
+    video.muted = true;
+  }
+  var section = document.getElementById('text-over-media-10164');
+
+  // Chrome on MacBook Retina
+  if (Device.isMacRetinaChrome()) {
+    var backgroundImage = document.querySelector('#text-over-media-10164 .section-background-image');
+    var srcProperty = 'landscapeSrc';
+
+    if (Shorthand.helpers.isPortrait() && backgroundImage.dataset.portraitSrc.length) {
+      srcProperty = 'portraitSrc';
+    }
+
+    backgroundImage.src = backgroundImage.dataset[srcProperty];
+    backgroundImage.style.display = 'block';
+    section.style.backgroundImage = 'none';
+  }
+
+  ViewportHeight.attachTo(section);
+}());
+</script>
+</div>
+</article>
+<script>
+  performance.mark('sectionsEnd');
+  </script>
+<footer>
+<div class="story-footer">
+<div class="return-to-top">
+<div class="up-arrow">
+<a class="section-navigator" href="#title-4022">
+<img src="./static/img/chevron-v1.png"/>
+</a>
+</div>
+<div class="up">
+<a class="section-navigator" href="#title-4022">TOP</a>
+</div>
+</div>
+<div class="image-container">
+<a href="http://www.shorthand.com"> <img src="./static/img/created-with-shorthand.png"/></a>
+</div>
+</div>
+</footer>
+<script charset="utf-8" src="./static/js/common.2176.js" type="text/javascript"></script>
+<script charset="utf-8" src="./static/js/story.2176.js" type="text/javascript"></script>
+<script>
+    //TODO: use dfd when autoscale has happened
+    setTimeout(function() {
+      $(window).resize();
+    }, 500);
+    Response.create({
+      "prop": "width",
+      'prefix': 'min-width-',
+      "breakpoints": [1001, 1401]
+    });
+  </script>
+<script>
+    
+
+    ga('create', 'UA-42055132-1', {'name': 'shorthand' });
+    ga('shorthand.send', 'pageview', {
+      'dimension1': 4039,
+      'dimension2': 869,
+      'metric1':4039,
+      'metric2':869
+    });
+
+    $(window).on('load', function() {
+      try {
+        performance.measure('startTitleTime', 'fetchStart', 'titleStart');
+        performance.measure('endTitleTime', 'fetchStart', 'titleEnd');
+
+        performance.measure('titleImageLoadedTime', 'fetchStart', 'titleImageLoaded');
+
+        performance.measure('elapsedHeadTime', 'headStart', 'headEnd');
+        performance.measure('endHeadTime', 'fetchStart', 'headEnd');
+
+        performance.measure('sectionsStartTime', 'fetchStart', 'sectionsStart');
+        performance.measure('sectionsEndTime', 'fetchStart', 'sectionsEnd');
+        performance.measure('elapsedSectionsTime', 'sectionsStart', 'sectionsEnd');
+      } catch (e) {}
+    });
+  </script>
+</div></div><div class="container footer bottom "><div class="footer-list"><ul><li><a href="http://www.coxmediagroup.com">Cox Media Group</a></li><li><a href="http://www.mystatesman.com/visitor_agreement/">Visitor Agreement</a></li><li><a href="http://www.mystatesman.com/privacy_policy/">Privacy Policy</a></li></ul><ul><li><a href="http://www.mystatesman.com/privacy_policy/#ad-choices">Ad Choices</a></li><li><a class="subscribe-link" href="https://myaccount.statesman.com/dsssubscribe.aspx
+">Subscribe</a></li><li><a href="http://www.mystatesman.com/">mystatesman.com</a></li></ul></div></div><!-- begin analytics block --><span style="display:none;" id="cm_s_code"></span><!-- SiteCatalyst code version: H.25.5.
+        Copyright 1996-2013 Adobe, Inc. All Rights Reserved
+        More info available at http://www.omniture.com --><script type="text/javascript">//<![CDATA[
+            
+            
+            
+
+            
+            var cx_siteName = "mystatesman";
+            var cx_rsID = "coxstatesman";
+            var cx_marketpath = "tx: austin";
+            var cx_medium = "newspaper";
+
+            var s_account = cx_rsID;
+
+            
+            if (("prod" == "prod") &&
+                (!((/www.prod.mystatesman/.test(window.location.host))
+                || (/m.prod.mystatesman/.test(window.location.host))))) {
+                    if (cx_medium == "radio" || cx_medium == "tv" || cx_medium == "newspaper" ) {
+                        s_account = s_account+",coxglobal";
+                    }
+                }
+            else {
+                
+                s_account = "coxradiodev,coxnewspaperdev,coxtvdev";
+            }
+        //]]></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/javascript/AppMeasurement.js"></script><script type="text/javascript" src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/bower_libs/omniture_utilities/omniture_utilities.min.js"></script><script type="text/javascript">//<![CDATA[
+
+        (function() { "use strict";
+
+            
+            cmg.s_coxnews.siteName=cx_siteName;
+            cmg.s_coxnews.linkInternalFilters = "javascript:,doubleclick.net,alt.coxnewsweb.com,legacy.com,uclick.com,signin.cmgdigital.com,www.mystatesman.com,outbrain.com";
+            cmg.s_coxnews.server = window.location.host;
+            cmg.s_coxnews.prop13 = cmg.s_coxnews.eVar13 = document.title.replace("| www.mystatesman.com", "");
+
+            if (metrics_signin == 1) {
+                cmg.s_coxnews.prop22 = cmg.s_coxnews.eVar22 = "gur";
+            }
+
+            
+            cmg.s_coxnews.prop63 = cmg.s_coxnews.eVar63 = location.protocol + '//' + location.host + location.pathname + location.search;
+
+            
+            if (cmg.s_coxnews.prop13.length == 0) {
+                cmg.s_coxnews.prop13 = cmg.s_coxnews.eVar13 = "no page title available";
+            }
+            cmg.s_coxnews.hier3 = cmg.s_coxnews.channel = cmg.s_coxnews.eVar56 = "no category";
+
+            
+
+            
+            if(cx_medium=="radio" || cx_medium=="tv" || cx_medium=="newspaper") {
+                cmg.s_coxnews.hier1 = cx_marketpath+"|"+cx_medium+"|"+cx_siteName;
+                cmg.s_coxnews.hier2 = cx_medium+"|"+cx_marketpath+"|"+cx_siteName;
+                
+                var search_page_re = new RegExp(cmg.s_coxnews.server+"\/search");
+                var search_match = search_page_re.exec(window.location);
+                
+                if (cmg.s_coxnews.hasOwnProperty('getQueryParam')) {
+                    var queryParam = cmg.s_coxnews.getQueryParam;
+                } else {
+                    var queryParam = cmg.s_coxnews.Util.getQueryParam;
+                }
+                if(search_match !== null && typeof cx_no_results !== 'undefined'){
+                    cmg.s_coxnews.eVar1 = queryParam('q');
+                    if(cx_no_results){
+                        cmg.s_coxnews.events = "event13,event14";
+                        cmg.s_coxnews.prop46 = "no";
+                    } else {
+                        cmg.s_coxnews.events = "event13";
+                        cmg.s_coxnews.prop46 = "yes";
+                    }
+                    if (queryParam("searchType") == "web") {
+                        cmg.s_coxnews.eVar45=cmg.s_coxnews.prop45 = "web";
+                    } else {
+                        cmg.s_coxnews.eVar45=cmg.s_coxnews.prop45 = "site";
+                    }
+                }
+                if (cx_medium == "radio") {
+                    cmg.s_coxnews.eVar43=cmg.s_coxnews.prop43 = "";
+                }
+                else if (cx_medium == "tv") {
+                    cmg.s_coxnews.eVar43=cmg.s_coxnews.prop43 = "tv";
+                }
+                else if (cx_medium == "newspaper") {
+                   cmg.s_coxnews.eVar43=cmg.s_coxnews.prop43 = "newspaper";
+                }
+            }
+
+            
+            
+cmg.s_coxnews.prop4 = "";
+cmg.s_coxnews.eVar4 = "";
+cmg.s_coxnews.prop5 = "";
+cmg.s_coxnews.eVar5 = "";
+cmg.s_coxnews.prop6 = "";
+cmg.s_coxnews.eVar6 = "";
+cmg.s_coxnews.prop7 = "24";
+cmg.s_coxnews.eVar7 = "24";
+cmg.s_coxnews.prop1 = "1057";
+cmg.s_coxnews.eVar12 = "1057";
+cmg.s_coxnews.prop2 = "";
+cmg.s_coxnews.eVar2 = "";
+cmg.s_coxnews.prop3 = "";
+cmg.s_coxnews.eVar3 = "";
+cmg.s_coxnews.prop42 = "mystatesman";
+cmg.s_coxnews.eVar42 = "mystatesman";
+cmg.s_coxnews.prop16 = "non-mobile site";
+cmg.s_coxnews.eVar16 = "non-mobile site";
+
+            var revpathArray = document.getElementsByName("cmg_revpath");
+            var pathNameStr = "";
+            if(revpathArray.length > 0 && revpathArray[0].content !== ""){
+                pathNameStr = revpathArray[0].content;
+            } else {
+                pathNameStr = window.location.pathname.split(/[#?]/)[0];
+                if(pathNameStr === "/"){
+                    pathNameStr = "/homepage/";
+                }
+            }
+            if(cmg.s_coxnews.prop22 == "404 page"){
+                pathNameStr = "/404_page" + pathNameStr;
+            }
+
+            if(pathNameStr.length > 99){
+                pathNameStr = pathNameStr.substr(0,98) + "/";
+            }
+
+            
+                cmg.s_coxnews.pageName = cmg.s_coxnews.eVar55 = pathNameStr.toLowerCase();
+            
+
+            
+
+            var authPromise = null;
+
+            function authType(status) {
+                if (!status) {
+                    return "non-subscriber";
+                }
+
+                var type = cmg.authorization.auth_type();
+                var map = {
+                    staff: "staff user",
+                    medleyopenhouse: "open house subscriber",
+                    mg2: "subscriber"
+                };
+
+                return map[type] || type;
+            }
+
+            if (cmg.site_meta && cmg.site_meta.media_type === 'premium') {
+
+                authPromise = new Promise(function(resolve) {
+                    var auth_url = 'http://www.mystatesman.com/profile/janus-auth/';
+                    cmg.authorization.check(auth_url, function(json) {
+                        resolve();
+                        var auth = json && json.authorized;
+
+                        if (cmg.site_meta.premium_status === 'premium') {
+                            cmg.s_coxnews.eVar52 = cmg.s_coxnews.prop52 = auth ? "full page" : "stubbed";
+                        }
+
+                        cmg.s_coxnews.eVar48 = cmg.s_coxnews.prop48 = authType(auth);
+                    });
+                });
+
+                authPromise = Promise.race([
+                    authPromise,
+                    new Promise(function(resolve) { setTimeout(resolve, 5000); })
+                ]);
+
+            } else {
+                
+                if (cmg.site_meta && cmg.site_meta.premium_status === 'premium') {
+                    cmg.s_coxnews.eVar52=cmg.s_coxnews.prop52 = "stubbed";
+                }
+            }
+            
+            
+            
+
+            
+            var cookie = cmg.query.cookie('ur_metrics');
+            if (cookie) {
+                
+                if (cookie.charAt(0) === '"') {
+                    cookie = cookie.slice(1, -1);
+                }
+                
+                var cpp = {"prop2": {"start": 25, "length": 50}, "eVar2": {"start": 25, "length": 50}, "eVar12": {"start": 0, "length": 4}, "prop6": {"start": 18, "length": 5}, "prop4": {"start": 8, "length": 5}, "prop5": {"start": 13, "length": 5}, "eVar3": {"start": 4, "length": 4}, "prop7": {"start": 23, "length": 2}, "eVar5": {"start": 13, "length": 5}, "prop1": {"start": 0, "length": 4}, "eVar7": {"start": 23, "length": 2}, "eVar6": {"start": 18, "length": 5}, "eVar4": {"start": 8, "length": 5}, "prop3": {"start": 4, "length": 4}};
+                for (var prop in cpp) {
+                    cmg.s_coxnews[prop] = cmg.query.trim(cookie.substr(cpp[prop].start, cpp[prop].length));
+                }
+            }
+
+            
+            for (var key in cmg.s_coxnews) {
+                if (cmg.s_coxnews[key] && key.match(/prop|eVar|hier/) !== null) {
+                    cmg.s_coxnews[key] = cmg.s_coxnews[key].toLowerCase();
+                }
+            }
+
+            Promise.resolve(authPromise).then(function() {
+                cmg.query(document).ready(function () {
+                    if (typeof(cmg.metrics_consolidator) !== "undefined") {
+                        
+
+                        cmg.metrics_consolidator.apply_on_ready(cmg_t, 'base');
+                    } else {
+                        cmg_t();
+                    }
+
+                    function cmg_t() {
+                        
+                        var s_code = cmg.s_coxnews.t();
+                        if (s_code) { cmg.query('#cm_s_code').text(s_code); }
+                    }
+                });
+            });
+
+        })();
+
+        //]]></script><noscript><a href="http://www.omniture.com" title="Web Analytics"><img src="https://coxnet.112.2o7.net/b/ss/coxstatesman/1/H.25.1--NS/0" height="1" width="1" border="0" alt="" /></a></noscript><!-- Quantcast Tag --><script type="text/javascript">
+        var _qevents = _qevents || [];
+
+        (function() {
+            var elem = document.createElement('script');
+            elem.src = (document.location.protocol == "https:" ? "https://secure" : "http://edge") + ".quantserve.com/quant.js";
+            elem.async = true;
+            elem.type = "text/javascript";
+            var scpt = document.getElementsByTagName('script')[0];
+            scpt.parentNode.insertBefore(elem, scpt);
+        })();
+
+        _qevents.push({
+            qacct:"p-38KriKc8Foyx-",
+            labels:".newspaper"
+        });
+    </script><noscript><div style="display:none;"><img src="//pixel.quantserve.com/pixel/p-38KriKc8Foyx-.gif" border="0" height="1" width="1" alt="Quantcast"/></div></noscript><!-- End Quantcast tag --><!-- Qualtrics Tag --><!-- requires javascript/qualtrics.js?zid="{{qz_id}}"&rate="{{qz_samplerate}}" --><div id="qualtrics_zone"><!--DO NOT REMOVE-CONTENTS PLACED HERE--></div><noscript><a target="_blank" href="http://www.qualtrics.com/enterprise-feedback-management">Enterprise Feedback Management</a><br/><a target="_blank" href="http://www.qualtrics.com/survey-software">Survey Software</a><br/></noscript><!-- End Qualtrics tag --><!-- end analytics block --><!-- dtm footer code --><script type="text/javascript">
+            if (window._satellite) {
+                _satellite.pageBottom();
+            }
+        </script><script src="http://media.cmgdigital.com/shared/media/2015-07-30-09-31-30/web/common/premium/js/plate_share_code.js"></script></body></html>
